@@ -1,0 +1,780 @@
+#!/usr/bin/env python3
+"""tasklog -- append-only exploration/decision event log with static HTML views.
+
+Single source of truth:  .tasklog/events-YYYY.jsonl (one JSON object per line, append-only).
+Derived views (regenerable, never hand-edit): .tasklog/view/index.html + <task-id>.html.
+Local only: .tasklog/ is gitignored by the main repo; an inner git repo (if present)
+receives an automatic commit after every add.
+
+Usage (repo root):
+  uv run --no-sync python scripts/render_tasklog.py add task --title "..." --unit "..." [--parent ID]
+      [--purpose ... --input ... --action ... --output ...]
+  uv run --no-sync python scripts/render_tasklog.py add obs     --task @last --text "..."
+  uv run --no-sync python scripts/render_tasklog.py add finding --task @last --text "..." [--evidence path]
+  uv run --no-sync python scripts/render_tasklog.py add option  --task @last --opt-id A --text "..." [--effect ... --cost ...]
+  uv run --no-sync python scripts/render_tasklog.py add decision --task @last --chosen A --rationale "..."
+      [--paper-line ... --system-line ... --supersedes TS]
+  uv run --no-sync python scripts/render_tasklog.py add impact  --task @last --text "..."
+  uv run --no-sync python scripts/render_tasklog.py add link    --task @last --to ID --why "..."
+  uv run --no-sync python scripts/render_tasklog.py add status  --task @last --state {active,decided,promoted,dropped}
+      [--note ... --method-doc doc#anchor]
+  uv run --no-sync python scripts/render_tasklog.py add note    --task @last --text "..."
+  uv run --no-sync python scripts/render_tasklog.py render [--open]
+  uv run --no-sync python scripts/render_tasklog.py brief    # print open tasks + RUNLOG drift (SessionStart hook)
+  uv run --no-sync python scripts/render_tasklog.py nudge    # Stop hook: remind once on unlogged decision signals
+  # any add accepts --ts 2026-10-17T21:00 to backfill a historical event (task id date follows)
+
+`@last` resolves to the most recently created task. Stdlib only.
+"""
+
+from __future__ import annotations
+
+import argparse
+import html
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+STATUSES = ("active", "decided", "promoted", "dropped")
+STATUS_ZH = {"active": "进行中", "decided": "已裁决", "promoted": "已转正", "dropped": "已废弃"}
+# chain-role labels for the timeline view (narrative register; ledger terms live on task cards)
+ROLE_ZH = {"task.new": "任务", "obs": "问题", "finding": "原因", "option": "方案",
+           "decision": "裁决", "impact": "影响", "link": "衔接", "status": "状态", "note": "批注"}
+
+# event type -> (required payload keys, optional payload keys); meta keys: ts/by/task/type
+SCHEMA = {
+    "task.new": (["title", "unit"], ["parent", "purpose", "input", "action", "output"]),
+    "obs": (["text"], ["evidence"]),
+    "finding": (["text"], ["evidence"]),
+    "option": (["option_id", "text"], ["effect", "cost", "ref"]),
+    "decision": (["chosen", "rationale"], ["paper_line", "system_line", "supersedes"]),
+    "impact": (["text"], []),
+    "link": (["to", "why"], []),
+    "status": (["state"], ["note", "method_doc"]),
+    "note": (["text"], []),
+}
+
+# ---------------------------------------------------------------- event store
+
+def now_ts() -> str:
+    return datetime.now().strftime("%Y-%m-%dT%H:%M")
+
+def events_files(root: Path) -> list[Path]:
+    return sorted(root.glob("events-*.jsonl"))
+
+def load_events(root: Path) -> list[dict]:
+    events: list[dict] = []
+    for fp in events_files(root):
+        for ln, line in enumerate(fp.read_text(encoding="utf-8").splitlines(), 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                raise SystemExit(f"[tasklog] {fp.name}:{ln} invalid JSON: {e}")
+    events.sort(key=lambda e: e.get("ts", ""))  # stable: file order breaks ties
+    return events
+
+def append_event(root: Path, ev: dict) -> None:
+    if ev["type"] not in SCHEMA:
+        raise SystemExit(f"[tasklog] unknown event type {ev['type']!r}")
+    req, opt = SCHEMA[ev["type"]]
+    missing = [k for k in req if not ev.get(k)]
+    if missing:
+        raise SystemExit(f"[tasklog] {ev['type']}: missing required {missing}")
+    stray = set(ev) - {"ts", "by", "task", "type", *req, *opt}
+    if stray:
+        raise SystemExit(f"[tasklog] {ev['type']}: unknown fields {sorted(stray)}")
+    fp = root / f"events-{datetime.now().year}.jsonl"
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    with fp.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+
+def norm_ts(ts: str | None) -> str:
+    ts = ts or now_ts()
+    if len(ts) != 16 or ts[4] != "-" or ts[7] != "-" or ts[10] != "T" or ts[13] != ":":
+        raise SystemExit(f"[tasklog] --ts must look like YYYY-MM-DDTHH:MM, got {ts!r}")
+    return ts
+
+def next_task_id(root: Path, ts: str = "") -> str:
+    day = ts[:10].replace("-", "")
+    if len(day) != 8 or not day.isdigit():
+        day = datetime.now().strftime("%Y%m%d")
+    prefix = "T-" + day + "-"
+    used = {e["task"] for e in load_events(root)
+            if e["type"] == "task.new" and str(e.get("task", "")).startswith(prefix)}
+    n = 1
+    while f"{prefix}{n}" in used:
+        n += 1
+    return f"{prefix}{n}"
+
+def resolve_task_ref(root: Path, ref: str) -> str:
+    if ref != "@last":
+        return ref
+    news = [e for e in load_events(root) if e["type"] == "task.new"]
+    if not news:
+        raise SystemExit("[tasklog] @last: no tasks exist yet")
+    return news[-1]["task"]
+
+def existing_options(events: list[dict], task_id: str) -> set[str]:
+    return {e["option_id"] for e in events
+            if e["type"] == "option" and e.get("task") == task_id}
+
+def build_tasks(events: list[dict]) -> dict[str, dict]:
+    tasks: dict[str, dict] = {}
+    for ev in events:
+        t = ev.get("task")
+        if ev["type"] == "task.new":
+            tasks[t] = {"id": t, "title": ev["title"], "unit": ev.get("unit", ""),
+                        "parent": ev.get("parent"), "ts0": ev["ts"], "ts1": ev["ts"],
+                        "contract": {k: ev.get(k) for k in ("purpose", "input", "action", "output")},
+                        "status": "active", "events": []}
+        task = tasks.get(t)
+        if task is None:
+            raise SystemExit(f"[tasklog] event {ev.get('ts')} {ev['type']} -> unknown task {t}")
+        task["events"].append(ev)
+        task["ts1"] = max(task["ts1"], ev.get("ts", task["ts1"]))
+        if ev["type"] == "status":
+            task["status"] = ev["state"]
+    return tasks
+
+def current_decision(task: dict) -> dict | None:
+    decs = [e for e in task["events"] if e["type"] == "decision"]
+    superseded = {d.get("supersedes") for d in decs if d.get("supersedes")}
+    live = [d for d in decs if d["ts"] not in superseded]
+    return live[-1] if live else None
+
+def inner_git_commit(root: Path, msg: str) -> None:
+    """Commit to the inner backup repo if .tasklog/.git exists (best effort)."""
+    if not (root / ".git").exists():
+        return
+    subprocess.run(["git", "-C", str(root), "add", "-A"], capture_output=True)
+    for extra in ([], ["-c", "user.name=tasklog", "-c", "user.email=tasklog@local"]):
+        r = subprocess.run(["git", "-C", str(root), *extra, "commit", "-m", msg],
+                           capture_output=True, text=True)
+        if r.returncode == 0 or "nothing to commit" in r.stdout + r.stderr:
+            return
+
+# ---------------------------------------------------------------- HTML views
+
+CSS = """
+:root{--ink:#1f2937;--muted:#6b7280;--line:#e5e7eb;--bg:#f6f7f9;--blue:#1d4ed8;
+--violet:#6d28d9;--green:#15803d;--gray:#6b7280}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font:15px/1.65 system-ui,-apple-system,"Hiragino Sans GB","Microsoft YaHei",sans-serif}
+.wrap{max-width:1080px;margin:0 auto;padding:24px 20px 60px}
+.brand{font-weight:700;letter-spacing:.08em;color:var(--muted);text-transform:uppercase;font-size:12px}
+h1{font-size:22px;margin:4px 0 8px} h2{font-size:15px;margin:26px 0 10px;color:var(--muted);letter-spacing:.04em}
+.goal{color:var(--muted);font-size:13.5px;margin:0 0 14px;max-width:76ch}
+a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+.card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:12px}
+.chip{display:inline-block;padding:1px 10px;border-radius:999px;font-size:12px;font-weight:600}
+.c-active{background:#dbeafe;color:var(--blue)} .c-decided{background:#ede9fe;color:var(--violet)}
+.c-promoted{background:#dcfce7;color:var(--green)} .c-dropped{background:#f3f4f6;color:var(--gray)}
+.meta{color:var(--muted);font-size:13px}
+blockquote{margin:0 0 10px;padding:8px 14px;border-left:3px solid #93c5fd;background:#f8fafc;
+border-radius:0 8px 8px 0}
+.tl{list-style:none;margin:0;padding:0}
+.tl li{position:relative;padding:0 0 14px 22px;border-left:2px solid var(--line)}
+.tl li::before{content:"";position:absolute;left:-5px;top:6px;width:8px;height:8px;
+border-radius:50%;background:var(--blue)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
+.opt{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:#fff}
+.opt.chosen{border-color:var(--green);background:#f0fdf4;box-shadow:0 0 0 1px var(--green)}
+.opt .id{font-weight:700}
+.duo{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.panel{border-radius:10px;padding:10px 14px;font-size:14px}
+.p-paper{background:#eff6ff;border:1px solid #bfdbfe} .p-sys{background:#fffbeb;border:1px solid #fde68a}
+.sup{text-decoration:line-through;opacity:.65}
+code{background:#f3f4f6;border-radius:4px;padding:1px 6px;font-size:12.5px;
+font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.note-h{border-left:4px solid #b45309} .note-a{border-left:4px solid #93c5fd}
+.ev{font-size:13.5px;padding:6px 0;border-bottom:1px dashed var(--line)}
+.tp{padding:10px 14px;margin-bottom:10px}
+.tp-h{display:flex;justify-content:flex-start;align-items:baseline;gap:10px;border-bottom:1px solid var(--line);padding-bottom:6px;margin-bottom:4px;cursor:pointer;list-style:none}
+.tp-h .chip{margin-left:auto}
+.tsum{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.tsum .chip{margin-left:auto}
+.tp-h::-webkit-details-marker{display:none}
+.tp-h::before{content:"▸";color:var(--muted);margin-right:8px;font-size:11px}
+details.tp[open]>.tp-h::before{content:"▾"}
+.tree{list-style:none;margin:6px 0 0;padding:0}
+.tree ul{list-style:none;margin:0;padding:0}
+.tree li{position:relative;padding:3px 0 3px 20px}
+.tree li::before{content:"";position:absolute;left:7px;top:0;height:100%;border-left:1px solid var(--line)}
+.tree li::after{content:"";position:absolute;left:7px;top:16px;width:12px;border-top:1px solid var(--line)}
+.tree li:last-child::before{height:16px}
+.tree summary{list-style:none;cursor:pointer}
+.tree summary::-webkit-details-marker{display:none}
+.tree summary::before{content:"▸";color:var(--muted);margin-right:6px;font-size:11px}
+.tree details[open]>summary::before{content:"▾"}
+.tag{flex:none;display:inline-block;padding:0 8px;border-radius:6px;background:#f3f4f6;color:var(--muted);font-size:12px;font-weight:600}
+.tag-dec{background:#ede9fe;color:var(--violet)}
+footer{margin-top:30px;color:var(--muted);font-size:12px;text-align:center}
+"""
+
+def esc(v) -> str:
+    return html.escape(str(v if v is not None else ""))
+
+def _page(title: str, header: str, body: str) -> str:
+    return (
+        '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{esc(title)} · tasklog</title><style>{CSS}</style></head>"
+        '<body><div class="wrap"><header><div class="brand">tasklog · 探索决策日志</div>'
+        f"{header}</header>{body}"
+        "<footer>generated by scripts/render_tasklog.py — 手编无效，事件流是唯一事实源</footer>"
+        "</div></body></html>\n")
+
+def task_page(task: dict, tasks: dict) -> str:
+    tid, st = task["id"], task["status"]
+    parent_html = ""
+    if task.get("parent"):
+        if task["parent"] in tasks:
+            parent_html = (f' <span class="meta">父任务 '
+                           f'<a href="{esc(task["parent"])}.html">{esc(task["parent"])}</a></span>')
+        else:
+            parent_html = f' <span class="meta">父任务 {esc(task["parent"])}</span>'
+    header = (
+        f'<h1>{esc(tid)} · {esc(task["title"])}</h1>'
+        f'<div><span class="chip c-{st}">{STATUS_ZH.get(st, st)}</span>'
+        f'<span class="meta"> {esc(task["unit"])} · {esc(task["ts0"])} ~ {esc(task["ts1"])}{parent_html}</span></div>')
+
+    parts = ['<h2>契约</h2><div class="grid">' + "".join(
+        f'<div class="card"><div class="meta">{zh}</div><div>{esc(task["contract"].get(k) or "—")}</div></div>'
+        for zh, k in (("目的", "purpose"), ("输入", "input"), ("动作", "action"), ("输出", "output"))
+    ) + "</div>"]
+
+    obs = [e for e in task["events"] if e["type"] == "obs"]
+    if obs:
+        parts.append("<h2>现象</h2>" + "".join(
+            f"<blockquote>{esc(e['text'])}</blockquote>" for e in obs))
+
+    tl = [e for e in task["events"] if e["type"] == "finding"]
+    if tl:
+        lis = []
+        for e in tl:
+            ev_html = f" <code>{esc(e['evidence'])}</code>" if e.get("evidence") else ""
+            lis.append(f'<li><span class="meta">{esc(e["ts"])} · {esc(e["by"])}</span>'
+                       f"<br>{esc(e['text'])}{ev_html}</li>")
+        parts.append('<h2>诊断链</h2><ul class="tl">' + "".join(lis) + "</ul>")
+
+    cur = current_decision(task)
+    chosen_id = cur.get("chosen") if cur else None
+    opts = [e for e in task["events"] if e["type"] == "option"]
+    if opts:
+        cards = []
+        for e in opts:
+            is_chosen = e["option_id"] == chosen_id
+            cls = "opt chosen" if is_chosen else "opt"
+            badge = ' <span class="chip c-promoted">✓ 采纳</span>' if is_chosen else ""
+            fx = f'<div class="meta">预期：{esc(e["effect"])}</div>' if e.get("effect") else ""
+            cst = f'<div class="meta">代价：{esc(e["cost"])}</div>' if e.get("cost") else ""
+            cards.append(f'<div class="{cls}"><span class="id">{esc(e["option_id"])}</span>{badge}'
+                         f"<div>{esc(e['text'])}</div>{fx}{cst}</div>")
+        parts.append('<h2>方案空间</h2><div class="grid">' + "".join(cards) + "</div>")
+
+    decs = [e for e in task["events"] if e["type"] == "decision"]
+    if decs:
+        superseded = {d.get("supersedes") for d in decs if d.get("supersedes")}
+        blocks = []
+        for e in decs:
+            sup = " sup" if e["ts"] in superseded else ""
+            note = (f' <span class="meta">（已被 {esc(e["supersedes"])} 修正）</span>'
+                    if e.get("supersedes") else "")
+            pp = f'<div class="panel p-paper"><b>论文线</b>：{esc(e.get("paper_line") or "未区分")}</div>'
+            ss = f'<div class="panel p-sys"><b>系统线</b>：{esc(e.get("system_line") or "未区分")}</div>'
+            blocks.append(f'<div class="card{sup}"><div class="meta">{esc(e["ts"])} · {esc(e["by"])}'
+                          f' · 选 <b>{esc(e["chosen"])}</b>{note}</div>'
+                          f"<p>{esc(e['rationale'])}</p><div class=\"duo\">{pp}{ss}</div></div>")
+        parts.append("<h2>裁决</h2>" + "".join(blocks))
+
+    imps = [e for e in task["events"] if e["type"] == "impact"]
+    if imps:
+        parts.append("<h2>影响面</h2>" + "".join(
+            f'<div class="ev"><span class="meta">{esc(e["ts"])}</span> · {esc(e["text"])}</div>'
+            for e in imps))
+
+    links = [e for e in task["events"] if e["type"] == "link"]
+    if links:
+        rows = []
+        for e in links:
+            a = (f'<a href="{esc(e["to"])}.html">{esc(e["to"])}</a>'
+                 if e["to"] in tasks else esc(e["to"]))
+            rows.append(f'<div class="ev"><span class="meta">{esc(e["ts"])}</span> → {a} · {esc(e["why"])}</div>')
+        parts.append("<h2>衔接</h2>" + "".join(rows))
+
+    notes = [e for e in task["events"] if e["type"] == "note"]
+    if notes:
+        rows = []
+        for e in notes:
+            cls = "note-h" if e.get("by") == "human" else "note-a"
+            rows.append(f'<div class="card {cls}"><span class="meta">{esc(e["ts"])} · {esc(e["by"])}</span>'
+                        f"<div>{esc(e['text'])}</div></div>")
+        parts.append("<h2>批注</h2>" + "".join(rows))
+
+    return _page(f"{tid} {task['title']}", header, "".join(parts))
+
+# Tool config (stage taxonomy) lives in configs/tasklog/config.json -- mechanical render
+# parameters only. Project goal is project CONTENT, not tool config: it is referenced, never
+# copied -- load_goal() extracts the first paragraph under "## 项目概况" in AGENTS.md.
+def load_stages(repo_root: Path) -> list[tuple[str, str]]:
+    fp = repo_root / "configs" / "tasklog" / "config.json"
+    if not fp.exists():
+        return []
+    try:
+        data = json.loads(fp.read_text(encoding="utf-8"))
+        return [(str(k), str(v)) for k, v in data.get("stages", [])]
+    except (json.JSONDecodeError, OSError):
+        return []
+
+def load_goal(repo_root: Path) -> str:
+    fp = repo_root / "AGENTS.md"
+    try:
+        lines = fp.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    try:
+        i = next(k for k, ln in enumerate(lines) if ln.strip() == "## 项目概况")
+    except StopIteration:
+        return ""
+    para: list[str] = []
+    for ln in lines[i + 1:]:
+        s = ln.strip()
+        if s.startswith("#"):
+            break
+        if not s:
+            if para:
+                break
+            continue
+        para.append(s)
+    return " ".join(para).replace("**", "").rstrip("：:")
+
+def load_wordlists(repo_root: Path) -> dict:
+    fp = repo_root / "configs" / "tasklog" / "config.json"
+    try:
+        data = json.loads(fp.read_text(encoding="utf-8"))
+        return data.get("wordlists", {})
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+def check_gates(ev: dict, wordlists: dict, raw: bool) -> None:
+    """Entry gates on the single write chokepoint: reject trivial-change events
+    (bypass with --raw), warn on jargon (discipline: plain words first)."""
+    text = " ".join(str(v) for k, v in ev.items()
+                    if k in ("title", "purpose", "text", "rationale", "note") and v)
+    if not raw:
+        trivial = wordlists.get("trivial", [])
+        if trivial and not any(w in text for w in NUDGE_WORDS):
+            hits = [w for w in trivial if w in text]
+            if hits:
+                raise SystemExit("[tasklog] 疑似无信息价值改动（命中平凡词：" + "、".join(hits) +
+                                 "）——纯排版/视觉微调不入账；确有裁决请改写文案体现决策，或加 --raw 显式放行")
+    jargon = wordlists.get("jargon", {})
+    hits = [w for w in jargon if w in text]
+    if hits:
+        tips = "；".join(f"{w}→{jargon[w]}" for w in hits[:3])
+        print(f"[tasklog] ⚠ 白话提醒（先说人话，专名放句尾括号）：{tips}")
+
+def stage_sections(tasks: dict, stages: list[tuple[str, str]]) -> list[tuple[str, list]]:
+    buckets: dict[str, list] = {}
+    for t in tasks.values():
+        unit = t["unit"]
+        if unit.startswith("docs/"):  # tolerate multi-writer prefix drift, e.g. docs/1-risk/...
+            unit = unit[len("docs/"):]
+        buckets.setdefault(unit.split("/", 1)[0], []).append(t)
+    if stages:
+        sections = [(label, buckets.pop(key)) for key, label in stages if key in buckets]
+        misc = [t for group in buckets.values() for t in group]
+        if misc:
+            sections.append(("其他", misc))
+        return sections
+    def sort_key(head: str):
+        p = head.split("-", 1)[0]
+        return (0, int(p), head) if p.isdigit() else (1, 0, head)
+    return [(head, buckets[head]) for head in sorted(buckets, key=sort_key)]
+
+def event_preview(e: dict) -> str:
+    if e["type"] == "decision":
+        return f'{e.get("chosen", "")} — {e.get("rationale", "")}'
+    if e["type"] == "status":
+        p = STATUS_ZH.get(e.get("state", ""), e.get("state", ""))
+        return f'{p}（{e["note"]}）' if e.get("note") else p
+    if e["type"] == "option":
+        return f'{e.get("option_id", "")} · {e.get("text", "")}'
+    if e["type"] == "link":
+        return f'→ {e.get("to", "")} · {e.get("why", "")}'
+    return str(e.get("text") or e.get("title") or e.get("why") or "")
+
+def _node(e: dict, inner: str = "") -> str:
+    p = event_preview(e)
+    tag = ROLE_ZH.get(e["type"], e["type"])
+    cls = "tag tag-dec" if e["type"] == "decision" else "tag"
+    text = esc(p[:100] + ("…" if len(p) > 100 else ""))
+    line = f'<span class="{cls}">{tag}</span> <span class="meta">{esc(e["ts"])}</span> {text}'
+    if inner:  # nodes with children are collapsible
+        return f"<li><details open><summary>{line}</summary>{inner}</details></li>"
+    return f"<li>{line}</li>"
+
+def causal_children(t: dict, tasks: dict) -> list[str]:
+    """Ordered causal nodes (problem/cause/option/decision/status/link/note + subtasks)."""
+    problems: list[list] = []   # [obs, [findings...]] -- findings hang under the latest obs
+    orphans: list[dict] = []    # findings that arrived before any obs
+    opts_by_ref: dict[str, list] = {}  # option.ref (finding ts) -> options addressing that cause
+    root_opts: list[dict] = []         # options without ref (address the task as a whole)
+    for e in t["events"]:
+        if e["type"] == "obs":
+            problems.append([e, []])
+        elif e["type"] == "finding":
+            (problems[-1][1] if problems else orphans).append(e)
+        elif e["type"] == "option":
+            (opts_by_ref.setdefault(e["ref"], []) if e.get("ref") else root_opts).append(e)
+    children = [_node(e) for e in orphans]
+    for obs, causes in problems:
+        cause_lis = []
+        for c in causes:
+            subs = opts_by_ref.get(c["ts"], [])
+            sub = f'<ul class="tree">{"".join(_node(o) for o in subs)}</ul>' if subs else ""
+            cause_lis.append(_node(c, sub))
+        inner = f'<ul class="tree">{"".join(cause_lis)}</ul>' if cause_lis else ""
+        children.append(_node(obs, inner))
+    children += [_node(e) for e in root_opts]
+    if not children:  # young task, no obs/option yet: fall back to contract purpose
+        pur = t["contract"].get("purpose")
+        if pur:
+            children.append(f'<li><span class="tag">目的</span> '
+                            f"<span>{esc(pur[:100] + ('…' if len(pur) > 100 else ''))}</span></li>")
+    cur = current_decision(t)
+    if cur:
+        children.append(_node(cur))
+    last_status = next((e for e in reversed(t["events"]) if e["type"] == "status"), None)
+    if last_status:
+        children.append(_node(last_status))
+    children += [_node(e) for e in t["events"] if e["type"] == "link"]
+    children += [_node(e) for e in t["events"] if e["type"] == "note"]
+    children += [task_node(sub, tasks) for sub in tasks.values() if sub.get("parent") == t["id"]]
+    return children
+
+def task_node(t: dict, tasks: dict) -> str:
+    summary = (f'<summary class="tsum"><a href="{esc(t["id"])}.html">{esc(t["id"])}</a> · '
+               f'{esc(t["title"])} <span class="meta">{esc(t["unit"])}</span>'
+               f'<span class="chip c-{t["status"]}">{STATUS_ZH.get(t["status"], t["status"])}</span></summary>')
+    kids = causal_children(t, tasks)
+    body = f'<ul class="tree">{"".join(kids)}</ul>' if kids else ""
+    return f"<li><details>{summary}{body}</details></li>"
+
+def index_page(tasks: dict, stages: list[tuple[str, str]], goal: str = "") -> str:
+    counts = {s: sum(1 for t in tasks.values() if t["status"] == s) for s in STATUSES}
+    chips = " ".join(f'<span class="chip c-{s}">{STATUS_ZH[s]} {counts[s]}</span>' for s in STATUSES)
+    header = "<h1>任务总览</h1>"
+    if goal:
+        header += f'<div class="goal">{esc(goal)}</div>'
+    header += f"<div>{chips}</div>"
+
+    body = []
+    for label, group in stage_sections(tasks, stages):
+        roots = [t for t in sorted(group, key=lambda x: x["ts1"]) if t.get("parent") not in tasks]
+        lis = "".join(task_node(t, tasks) for t in roots)
+        body.append(f'<details class="card tp" open><summary class="tp-h">{esc(label)} '
+                    f'<span class="meta">{len(group)} 任务</span></summary>'
+                    f'<ul class="tree">{lis}</ul></details>')
+    return _page("index", header, "".join(body))
+
+def render_views(root: Path) -> list[Path]:
+    view = root / "view"
+    view.mkdir(parents=True, exist_ok=True)
+    events = load_events(root)
+    tasks = build_tasks(events)
+    written = []
+    for tid, task in tasks.items():
+        fp = view / f"{tid}.html"
+        fp.write_text(task_page(task, tasks), encoding="utf-8")
+        written.append(fp)
+    fp = view / "index.html"
+    fp.write_text(index_page(tasks, load_stages(REPO_ROOT), load_goal(REPO_ROOT)), encoding="utf-8")
+    written.append(fp)
+    return written
+
+# ---------------------------------------------------------------- CLI
+
+def build_add_parser(add: argparse.ArgumentParser) -> None:
+    at = add.add_subparsers(dest="etype", required=True, metavar="etype")
+
+    def with_by(s):
+        s.add_argument("--by", default="claude-code",
+                       help="who wrote this event: human | claude-code | codex ...")
+        s.add_argument("--ts", help="override timestamp for backfill, e.g. 2026-10-17T21:00")
+        s.add_argument("--raw", action="store_true", help="bypass the trivial-change gate (explicit override)")
+        return s
+
+    def with_task(s):
+        s.add_argument("--task", required=True, help="task id, or @last for the newest task")
+        return s
+
+    s = at.add_parser("task")
+    s.add_argument("--title", required=True)
+    s.add_argument("--unit", required=True)
+    for k in ("parent", "purpose", "input", "action", "output"):
+        s.add_argument(f"--{k.replace('_', '-')}")
+    with_by(s)
+
+    for name in ("obs", "finding"):
+        s = at.add_parser(name)
+        with_task(s)
+        s.add_argument("--text", required=True)
+        s.add_argument("--evidence")
+        with_by(s)
+
+    s = at.add_parser("option")
+    with_task(s)
+    s.add_argument("--opt-id", required=True, dest="option_id", help="short label like A/B/C")
+    s.add_argument("--text", required=True)
+    s.add_argument("--effect")
+    s.add_argument("--cost")
+    s.add_argument("--ref", help="ts of the finding this option addresses (tree attachment)")
+    with_by(s)
+
+    s = at.add_parser("decision")
+    with_task(s)
+    s.add_argument("--chosen", required=True)
+    s.add_argument("--rationale", required=True)
+    s.add_argument("--paper-line")
+    s.add_argument("--system-line")
+    s.add_argument("--supersedes", help="ts of the decision event this one replaces")
+    with_by(s)
+
+    s = at.add_parser("impact")
+    with_task(s)
+    s.add_argument("--text", required=True)
+    with_by(s)
+
+    s = at.add_parser("link")
+    with_task(s)
+    s.add_argument("--to", required=True)
+    s.add_argument("--why", required=True)
+    with_by(s)
+
+    s = at.add_parser("status")
+    with_task(s)
+    s.add_argument("--state", required=True, choices=STATUSES)
+    s.add_argument("--note")
+    s.add_argument("--method-doc", help="doc anchor, e.g. docs/2-resilience/x.md#sec")
+    with_by(s)
+
+    s = at.add_parser("note")
+    with_task(s)
+    s.add_argument("--text", required=True)
+    with_by(s)
+
+PAYLOAD_KEYS = {
+    "obs": ("text", "evidence"),
+    "finding": ("text", "evidence"),
+    "option": ("option_id", "text", "effect", "cost", "ref"),
+    "decision": ("chosen", "rationale", "paper_line", "system_line", "supersedes"),
+    "impact": ("text",),
+    "link": ("to", "why"),
+    "status": ("state", "note", "method_doc"),
+    "note": ("text",),
+}
+
+def run_add(root: Path, args: argparse.Namespace) -> None:
+    lock = _acquire_add_lock(root)
+    try:
+        _run_add_locked(root, args)
+    finally:
+        lock.unlink(missing_ok=True)
+
+def _run_add_locked(root: Path, args: argparse.Namespace) -> None:
+    events = load_events(root)
+    known = {e["task"] for e in events if e["type"] == "task.new"}
+    ts = norm_ts(getattr(args, "ts", None))
+    if args.etype == "task":
+        task_id = next_task_id(root, ts)
+        ev = {"ts": ts, "by": args.by, "task": task_id, "type": "task.new",
+              "title": args.title, "unit": args.unit}
+        for k in ("parent", "purpose", "input", "action", "output"):
+            v = getattr(args, k, None)
+            if v:
+                ev[k] = v
+    else:
+        task_id = resolve_task_ref(root, args.task)
+        if task_id not in known:
+            raise SystemExit(f"[tasklog] unknown task {task_id}")
+        ev = {"ts": ts, "by": args.by, "task": task_id, "type": args.etype}
+        for k in PAYLOAD_KEYS[args.etype]:
+            v = getattr(args, k, None)
+            if v:
+                ev[k] = v
+        if args.etype == "link" and ev["to"] not in known:
+            raise SystemExit(f"[tasklog] link target {ev['to']} does not exist")
+        if args.etype == "decision":
+            allowed = existing_options(events, task_id) | {"none"}
+            if ev["chosen"] not in allowed:
+                raise SystemExit(f"[tasklog] --chosen must be an existing option id "
+                                 f"{sorted(allowed)} (or 'none')")
+    check_gates(ev, load_wordlists(REPO_ROOT), getattr(args, "raw", False))
+    append_event(root, ev)
+    render_views(root)
+    inner_git_commit(root, f"{ev['type']} {task_id}")
+    _update_runlog_marker(REPO_ROOT, root)
+    print(f"[tasklog] + {ev['ts']} {ev['type']} -> {task_id} (views regenerated)")
+
+def run_render(root: Path, args: argparse.Namespace) -> None:
+    written = render_views(root)
+    print(f"[tasklog] rendered {len(written)} views under {root / 'view'}")
+    if args.open:
+        idx = root / "view" / "index.html"
+        if sys.platform == "darwin":
+            subprocess.run(["open", str(idx)])
+        else:
+            print(f"open manually: {idx}")
+
+# ------------- borrowed from .remember: locks / position pointer / nudge (mechanical only)
+
+RUNLOG_DRIFT_LINES = 20
+NUDGE_WORDS = ("裁决", "敲定", "选定", "定稿", "否决", "判死", "采纳", "最终选择")
+NUDGE_FRESH_S = 30 * 60
+
+def _acquire_add_lock(root: Path) -> Path:
+    """Atomic noclobber lock guarding append+render+commit; a dead holder is taken over."""
+    lock = root / "tmp" / "add.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        holder = lock.read_text().strip()
+        try:
+            pid = int(holder)
+        except ValueError:
+            pid = 0
+        if pid:
+            try:
+                os.kill(pid, 0)
+                raise SystemExit(f"[tasklog] another add is running (pid {pid}); retry in a moment")
+            except ProcessLookupError:
+                pass  # holder died: take over
+        lock.unlink(missing_ok=True)
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    os.write(fd, str(os.getpid()).encode())
+    os.close(fd)
+    return lock
+
+def runlog_lines(repo_root: Path) -> dict[str, int]:
+    out: dict[str, int] = {}
+    docs = repo_root / "docs"
+    if not docs.is_dir():
+        return out
+    for fp in docs.rglob("RUNLOG.md"):
+        try:
+            out[str(fp.relative_to(repo_root))] = len(fp.read_text(encoding="utf-8").splitlines())
+        except OSError:
+            continue
+    return out
+
+def _update_runlog_marker(repo_root: Path, root: Path) -> None:
+    """Position pointer (last-save.json pattern): RUNLOG line counts as of the last add."""
+    mp = root / "tmp" / "runlog-marker.json"
+    mp.parent.mkdir(parents=True, exist_ok=True)
+    mp.write_text(json.dumps({"lines": runlog_lines(repo_root)}, ensure_ascii=False), encoding="utf-8")
+
+def _runlog_drift(repo_root: Path, root: Path) -> list[str]:
+    mp = root / "tmp" / "runlog-marker.json"
+    if not mp.exists():
+        _update_runlog_marker(repo_root, root)  # seed silently on first run
+        return []
+    try:
+        marker = json.loads(mp.read_text(encoding="utf-8"))["lines"]
+    except (json.JSONDecodeError, OSError, KeyError):
+        return []
+    msgs = []
+    for path, now_lines in runlog_lines(repo_root).items():
+        drift = now_lines - int(marker.get(path, now_lines))
+        if drift >= RUNLOG_DRIFT_LINES:
+            msgs.append(f"- RUNLOG 漂移：{path} +{drift} 行未见落账——检查是否有裁决待补")
+    return msgs
+
+def should_nudge(entries_text: str, last_event_age_s: float | None) -> str | None:
+    """Reminder reason when decision signals meet a stale ledger; None to stay quiet.
+    A wrong nudge is harmless -- it never writes, and fires at most once per session."""
+    if not entries_text:
+        return None
+    if last_event_age_s is not None and last_event_age_s < NUDGE_FRESH_S:
+        return None
+    hits = [w for w in NUDGE_WORDS if w in entries_text]
+    if not hits:
+        return None
+    words = "、".join(hits[:4])
+    return (f"检测到疑似未落账的裁决信号（{words}）。若本会话确有方案选择/裁决，"
+            f"请用 render_tasklog.py add 落账后结束；确无则直接结束（每会话至多提醒一次）。")
+
+def run_nudge(root: Path) -> None:
+    """Stop hook: read hook JSON on stdin, block-once with the nudge reminder."""
+    raw = sys.stdin.read() if not sys.stdin.isatty() else ""
+    try:
+        hook = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        hook = {}
+    sid = "".join(c for c in str(hook.get("session_id", "")) if c.isalnum() or c == "-")[:64] or "nosession"
+    marker = root / "tmp" / f"nudged-{sid}"
+    if marker.exists():
+        return
+    texts = []
+    now_fp = root.parent / ".remember" / "now.md"
+    if now_fp.exists():
+        texts.append(now_fp.read_text(encoding="utf-8", errors="ignore"))
+    ages = [time.time() - p.stat().st_mtime for p in events_files(root)]
+    reason = should_nudge("\n".join(texts), min(ages) if ages else None)
+    if reason:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("1", encoding="utf-8")
+        print(json.dumps({"decision": "block", "reason": f"[tasklog] {reason}"}, ensure_ascii=False))
+
+def run_brief(root: Path) -> None:
+    """Open tasks (active/decided) + RUNLOG drift, for session-start injection; silent when none."""
+    lines: list[str] = []
+    if events_files(root):
+        tasks = build_tasks(load_events(root))
+        open_tasks = [t for t in tasks.values() if t["status"] in ("active", "decided")]
+        if open_tasks:
+            lines.append("[tasklog] 未结任务（决策发生即记账 add … --task @last；视图 .tasklog/view/index.html）")
+            for t in sorted(open_tasks, key=lambda x: x["ts1"], reverse=True)[:5]:
+                lines.append(f"- {t['id']} {t['title']} [{STATUS_ZH[t['status']]}] 单位 {t['unit']} 最后活动 {t['ts1']}")
+    lines += _runlog_drift(REPO_ROOT, root)
+    if lines:
+        print("\n".join(lines))
+
+
+def main(argv=None) -> None:
+    parser = argparse.ArgumentParser(
+        prog="render_tasklog.py",
+        description="Append-only exploration/decision event log with HTML views (see module docstring).")
+    parser.add_argument("--root", type=Path, default=REPO_ROOT / ".tasklog",
+                        help="tasklog root dir (default: <repo>/.tasklog)")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    build_add_parser(sub.add_parser("add", help="append an event (validates, re-renders, inner-git commits)"))
+    rp = sub.add_parser("render", help="regenerate all HTML views")
+    rp.add_argument("--open", action="store_true", help="open index.html in the browser (macOS)")
+    sub.add_parser("brief", help="print open tasks + RUNLOG drift (for SessionStart hook injection)")
+    sub.add_parser("nudge", help="Stop hook: remind once on unlogged decision signals (reads hook JSON on stdin)")
+    args = parser.parse_args(argv)
+    root = args.root.resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    if args.cmd == "add":
+        run_add(root, args)
+    elif args.cmd == "brief":
+        run_brief(root)
+    elif args.cmd == "nudge":
+        run_nudge(root)
+    else:
+        run_render(root, args)
+
+if __name__ == "__main__":
+    main()
