@@ -221,3 +221,40 @@ def test_add_gates_trivial_reject_and_jargon_warn(capsys):
     capsys.readouterr()
     mod.check_gates({"type": "obs", "text": "通道合并"}, wl, raw=False)                      # jargon warns only
     assert "白话提醒" in capsys.readouterr().out
+
+
+def test_doctor_passes_on_healthy_store(tmp_path, capsys):
+    repo = tmp_path / "repo"
+    (repo / "configs" / "tasklog").mkdir(parents=True)
+    (repo / "configs" / "tasklog" / "config.json").write_text(
+        '{"stages": [["1-risk", "风险"]], "wordlists": {"trivial": ["排版"], "jargon": {}}}',
+        encoding="utf-8")
+    (repo / ".claude").mkdir()
+    (repo / ".claude" / "settings.json").write_text(
+        '{"hooks": {"SessionStart": [{"hooks": [{"command": "render_tasklog.py brief"}]}],'
+        ' "Stop": [{"hooks": [{"command": "render_tasklog.py nudge"}]}]}}', encoding="utf-8")
+    (repo / "AGENTS.md").write_text("# t\n\n## 项目概况\n\n目标。\n", encoding="utf-8")
+    root = repo / ".whylog"
+    mod.append_event(root, {"ts": "2026-10-20T06:00", "by": "h", "task": "T-20261020-1",
+                            "type": "task.new", "title": "t", "unit": "u"})
+    mod.run_doctor(root, repo)                              # no SystemExit on a healthy store
+    out = capsys.readouterr().out
+    assert "PASS" in out and "1 events, 1 tasks" in out and "hooks wired" in out
+
+
+def test_doctor_fails_on_corrupt_store(tmp_path, capsys):
+    root = tmp_path / "whylog"
+    root.mkdir()
+    (root / "chain.jsonl").write_text('{"broken\n', encoding="utf-8")
+    with pytest.raises(SystemExit):
+        mod.run_doctor(root, tmp_path)
+    out = capsys.readouterr().out
+    assert "[FAIL]" in out and "invalid JSON" in out
+
+
+def test_transcript_signals_full_file_no_loss(tmp_path):
+    tp = tmp_path / "session.jsonl"
+    pad = '{"type":"assistant","message":{"content":[{"type":"text","text":"填充行"}]}}\n' * 6000
+    tp.write_text('{"type":"user","message":{"content":"早期敲定方案 B"}}\n' + pad, encoding="utf-8")
+    sig = mod.transcript_signals(str(tp))
+    assert "敲定方案 B" in sig                    # early line still seen: no tail-window loss

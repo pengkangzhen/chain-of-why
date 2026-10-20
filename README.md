@@ -44,6 +44,11 @@ uv run --no-sync python scripts/render_tasklog.py add obs --task @last --text "�
 uv run --no-sync python scripts/render_tasklog.py render --open
 ```
 
+```bash
+# 5. 体检（钩子层静默失败的可视化）
+python3 scripts/render_tasklog.py doctor   # store/views/hooks/config/lock 健康检查
+```
+
 项目目标行：自动提取 `AGENTS.md`（或 `CLAUDE.md`）「## 项目概况」首段显示在总览页——引用而非复制，不制造第二份事实源。
 
 ## 事件模型（9 型）
@@ -72,7 +77,7 @@ uv run --no-sync python scripts/render_tasklog.py render --open
 
 ## 信号源（自含，零外部依赖）
 
-`nudge` 直接读**会话记录尾部**：Stop hook 的 stdin 自带 `transcript_path`（缺省时按项目 slug 回退到最新 jsonl），只取 user/assistant 的文本消息（尾部 200KB），对裁决信号词做匹配。不读第三方插件的内部文件、不调 LLM——grep 一手信号源即可。与会话记忆类插件（如 [remember](https://github.com/Digital-Process-Tools/claude-remember)）互不依赖、互不干扰：过程归它，裁决归 Task Thread。
+`nudge` 直接读**会话记录**：Stop hook 的 stdin 自带 `transcript_path`（缺省时按项目 slug 回退到最新 jsonl），只取 user/assistant 的文本消息（子串预筛后仅解析候选行，全文件无尾窗丢失；账本 30 分钟内有事件时连读都跳过），对裁决信号词做匹配。不读第三方插件的内部文件、不调 LLM——grep 一手信号源即可。与会话记忆类插件（如 [remember](https://github.com/Digital-Process-Tools/claude-remember)）互不依赖、互不干扰：过程归它，裁决归 Task Thread。
 
 ## Config（configs/tasklog/config.json）
 

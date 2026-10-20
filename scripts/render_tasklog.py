@@ -22,6 +22,7 @@ Usage (repo root):
   uv run --no-sync python scripts/render_tasklog.py render [--open]
   uv run --no-sync python scripts/render_tasklog.py brief    # print open tasks + RUNLOG drift (SessionStart hook)
   uv run --no-sync python scripts/render_tasklog.py nudge    # Stop hook: remind once on unlogged decision signals
+  uv run --no-sync python scripts/render_tasklog.py doctor  # one-shot health check: store/views/hooks/config/goal/lock
   # any add accepts --ts 2026-10-17T21:00 to backfill a historical event (task id date follows)
 
 `@last` resolves to the most recently created task. Stdlib only.
@@ -732,21 +733,20 @@ def should_nudge(entries_text: str, last_event_age_s: float | None) -> str | Non
     return (f"检测到疑似未落账的裁决信号（{words}）。若本会话确有方案选择/裁决，"
             f"请用 render_tasklog.py add 落账后结束；确无则直接结束（每会话至多提醒一次）。")
 
-def transcript_signals(transcript_path: str, tail_bytes: int = 200_000) -> str:
-    """Recent human/assistant text from a Claude Code session transcript -- the
-    self-contained signal source for nudge (grep-only: no distillation needed)."""
+def transcript_signals(transcript_path: str) -> str:
+    """Human/assistant text from a Claude Code session transcript -- the
+    self-contained signal source for nudge (grep-only: no distillation).
+    Full-file scan, no tail-window loss: candidate lines are substring-
+    prefilters before JSON parsing, so tool-result bulk never pays parse cost."""
     try:
-        with open(transcript_path, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            f.seek(max(0, size - tail_bytes))
-            chunk = f.read().decode("utf-8", errors="ignore")
+        chunk = Path(transcript_path).read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return ""
     texts: list[str] = []
     for line in chunk.splitlines():
         line = line.strip()
-        if not line.startswith("{"):
+        if not ('"type":"user"' in line or '"type": "user"' in line
+                or '"type":"assistant"' in line or '"type": "assistant"' in line):
             continue
         try:
             entry = json.loads(line)
@@ -783,9 +783,11 @@ def run_nudge(root: Path) -> None:
     marker = root / "tmp" / f"nudged-{sid}"
     if marker.exists():
         return
-    tp = str(hook.get("transcript_path") or "") or newest_transcript(REPO_ROOT)
     cf = chain_file(root)
     age = time.time() - cf.stat().st_mtime if cf.exists() else None
+    if age is not None and age < NUDGE_FRESH_S:
+        return  # fresh ledger means the signals are already logged -- skip the transcript read
+    tp = str(hook.get("transcript_path") or "") or newest_transcript(REPO_ROOT)
     reason = should_nudge(transcript_signals(tp), age)
     if reason:
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -807,6 +809,117 @@ def run_brief(root: Path) -> None:
         print("\n".join(lines))
 
 
+# ---------------------------------------------------------------- doctor
+
+def run_doctor(root: Path, repo_root: Path) -> None:
+    """One-shot health check (borrowed from remember's doctor): every hook runs
+    under `2>/dev/null || true`, so breakage is silent by design -- this makes
+    it visible in one command. Exit 1 on FAILs; warns do not fail."""
+    fails = 0
+
+    def ok(msg: str) -> None:
+        print(f"[ok]   {msg}")
+
+    def warn(msg: str) -> None:
+        print(f"[warn] {msg}")
+
+    def fail(msg: str) -> None:
+        nonlocal fails
+        fails += 1
+        print(f"[FAIL] {msg}")
+
+    print(f"[tasklog] doctor -- store {root}")
+
+    cf = chain_file(root)
+    events_n = 0
+    if not cf.exists():
+        fail(f"{cf.name} missing -- no ledger (first `add task` creates it)")
+    else:
+        bad = 0
+        last_ts = ""
+        for line in cf.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            events_n += 1
+            try:
+                last_ts = max(last_ts, json.loads(line).get("ts", ""))
+            except json.JSONDecodeError:
+                bad += 1
+        if bad:
+            fail(f"{cf.name}: {bad} invalid JSON line(s) -- add/brief/nudge will refuse to load")
+        else:
+            tasks_n = sum(1 for e in load_events(root) if e["type"] == "task.new")
+            ok(f"{cf.name}: {events_n} events, {tasks_n} tasks, last ts {last_ts or '?'}")
+
+    view = root / "view"
+    pages = sorted(view.glob("*.html")) if view.is_dir() else []
+    if not pages:
+        warn("view/ empty or missing -- run `render` to (re)build")
+    elif cf.exists() and max(p.stat().st_mtime for p in pages) < cf.stat().st_mtime:
+        warn("views older than the ledger -- run `render`")
+    else:
+        ok(f"view/: {len(pages)} pages, up to date")
+
+    cfg = repo_root / "configs" / "tasklog" / "config.json"
+    if cfg.exists():
+        try:
+            data = json.loads(cfg.read_text(encoding="utf-8"))
+            wl = data.get("wordlists", {})
+            ok(f"config: {len(data.get('stages', []))} stages, "
+               f"{len(wl.get('trivial', []))} trivial / {len(wl.get('jargon', {}))} jargon words")
+        except json.JSONDecodeError as e:
+            fail(f"config invalid JSON ({e}) -- gates silently disabled (load_* swallows errors)")
+    else:
+        warn("configs/tasklog/config.json absent -- zero-config mode (autoderived stages, no gates)")
+
+    wired = {"SessionStart": "brief", "Stop": "nudge"}
+    sp = repo_root / ".claude" / "settings.json"
+    missing = list(wired)
+    if sp.exists():
+        try:
+            hooks = json.loads(sp.read_text(encoding="utf-8")).get("hooks", {})
+            missing = [ev for ev, needle in wired.items()
+                       if not any(needle in h.get("command", "")
+                                  for grp in hooks.get(ev, []) for h in grp.get("hooks", []))]
+        except json.JSONDecodeError:
+            warn(".claude/settings.json invalid JSON -- hooks state unknown")
+    if missing:
+        warn(f"hooks not wired: {', '.join(missing)} (brief/nudge automation off -- see README)")
+    else:
+        ok("hooks wired: SessionStart brief + Stop nudge")
+
+    if load_goal(repo_root):
+        ok("goal: AGENTS.md 项目概况 first paragraph found")
+    else:
+        warn("goal: AGENTS.md 项目概况 missing -- index page loses the goal line")
+
+    lock = root / "tmp" / "add.lock"
+    if lock.exists():
+        try:
+            pid = int(lock.read_text().strip())
+            os.kill(pid, 0)
+            warn(f"add.lock held by live pid {pid} -- an add is running (or crashed mid-run)")
+        except ValueError:
+            ok("add.lock unreadable -- next add takes it over automatically")
+        except ProcessLookupError:
+            ok("add.lock stale (dead holder) -- next add takes it over automatically")
+        except PermissionError:
+            warn(f"add.lock held by pid {pid} (no permission to probe) -- check for a stuck add")
+    else:
+        ok("no add.lock residue")
+
+    if (root / ".git").exists():
+        r = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%h %s"],
+                           capture_output=True, text=True)
+        ok(f"inner backup git: {r.stdout.strip() or 'no commits yet'}")
+    else:
+        warn("no inner git repo in store -- optional local backup off")
+
+    print(f"[tasklog] doctor: {'FAIL' if fails else 'PASS'}" + (f" ({fails} failing)" if fails else ""))
+    if fails:
+        raise SystemExit(1)
+
+
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(
         prog="render_tasklog.py",
@@ -819,6 +932,7 @@ def main(argv=None) -> None:
     rp.add_argument("--open", action="store_true", help="open index.html in the browser (macOS)")
     sub.add_parser("brief", help="print open tasks + RUNLOG drift (for SessionStart hook injection)")
     sub.add_parser("nudge", help="Stop hook: remind once on unlogged decision signals (reads hook JSON on stdin)")
+    sub.add_parser("doctor", help="one-shot health check: store/views/hooks/config/goal/lock")
     args = parser.parse_args(argv)
     root = args.root.resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -828,6 +942,8 @@ def main(argv=None) -> None:
         run_brief(root)
     elif args.cmd == "nudge":
         run_nudge(root)
+    elif args.cmd == "doctor":
+        run_doctor(root, REPO_ROOT)
     else:
         run_render(root, args)
 
