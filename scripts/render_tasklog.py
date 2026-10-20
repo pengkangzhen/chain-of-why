@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """tasklog -- append-only exploration/decision event log with static HTML views.
 
-Single source of truth:  .tasklog/events-YYYY.jsonl (one JSON object per line, append-only).
-Derived views (regenerable, never hand-edit): .tasklog/view/index.html + <task-id>.html.
-Local only: .tasklog/ is gitignored by the main repo; an inner git repo (if present)
+Single source of truth:  .whylog/events-YYYY.jsonl (one JSON object per line, append-only).
+Derived views (regenerable, never hand-edit): .whylog/view/index.html + <task-id>.html.
+Local only: .whylog/ is gitignored by the main repo; an inner git repo (if present)
 receives an automatic commit after every add.
 
 Usage (repo root):
@@ -153,7 +153,7 @@ def current_decision(task: dict) -> dict | None:
     return live[-1] if live else None
 
 def inner_git_commit(root: Path, msg: str) -> None:
-    """Commit to the inner backup repo if .tasklog/.git exists (best effort)."""
+    """Commit to the inner backup repo if .whylog/.git exists (best effort)."""
     if not (root / ".git").exists():
         return
     subprocess.run(["git", "-C", str(root), "add", "-A"], capture_output=True)
@@ -782,7 +782,7 @@ def run_brief(root: Path) -> None:
         tasks = build_tasks(load_events(root))
         open_tasks = [t for t in tasks.values() if t["status"] in ("active", "decided")]
         if open_tasks:
-            lines.append("[tasklog] 未结任务（决策发生即记账 add … --task @last；视图 .tasklog/view/index.html）")
+            lines.append("[tasklog] 未结任务（决策发生即记账 add … --task @last；视图 .whylog/view/index.html）")
             for t in sorted(open_tasks, key=lambda x: x["ts1"], reverse=True)[:5]:
                 lines.append(f"- {t['id']} {t['title']} [{STATUS_ZH[t['status']]}] 单位 {t['unit']} 最后活动 {t['ts1']}")
     lines += _runlog_drift(REPO_ROOT, root)
@@ -794,8 +794,8 @@ def main(argv=None) -> None:
     parser = argparse.ArgumentParser(
         prog="render_tasklog.py",
         description="Append-only exploration/decision event log with HTML views (see module docstring).")
-    parser.add_argument("--root", type=Path, default=REPO_ROOT / ".tasklog",
-                        help="tasklog root dir (default: <repo>/.tasklog)")
+    parser.add_argument("--root", type=Path, default=REPO_ROOT / ".whylog",
+                        help="tasklog root dir (default: <repo>/.whylog)")
     sub = parser.add_subparsers(dest="cmd", required=True)
     build_add_parser(sub.add_parser("add", help="append an event (validates, re-renders, inner-git commits)"))
     rp = sub.add_parser("render", help="regenerate all HTML views")

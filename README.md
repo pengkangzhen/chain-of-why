@@ -1,6 +1,6 @@
 # Chain of Why — 探索研究的裁决账本
 
-> Append-only decision ledger for exploratory research. **链上每个节点是一个「为什么」**——问题记 why-there-is-a-problem，诊断记 why-it-happens，裁决记 why-this-option；任务即线程（跨天回访、追加续章），裁决长在因果树上。本地 JSONL 事件流是唯一事实源，静态 HTML 视图随写随生，纯 Python 3 标准库、零依赖。（CLI 入口 `scripts/render_tasklog.py`，数据目录 `.tasklog/`——标识符沿用 tasklog 命名，不随品牌层变更）
+> Append-only decision ledger for exploratory research. **链上每个节点是一个「为什么」**——问题记 why-there-is-a-problem，诊断记 why-it-happens，裁决记 why-this-option；任务即线程（跨天回访、追加续章），裁决长在因果树上。本地 JSONL 事件流是唯一事实源，静态 HTML 视图随写随生，纯 Python 3 标准库、零依赖。（CLI 入口 `scripts/render_tasklog.py` 沿用曾用名；数据目录 `.whylog/`）
 
 **解决什么问题**：探索期的研究工作充斥「问题 → 诊断 → 方案空间 → 裁决」的推理链，但这些内容通常只活在 AI 会话记录或个人记忆里——会话结束即失散，写论文/答辩/交接时无法追溯「当时为什么选 B 不选 A」。Task Thread 把裁决沉淀为**可审计的事件流**。
 
@@ -8,11 +8,11 @@
 
 ```
                     ┌────────────── 写入口（唯一咽喉）──────────────┐
-人 / 任意 AI agent ─┤ add（schema 校验 + 平凡门 + 白话门 + 并发锁）├─▶ .tasklog/events-YYYY.jsonl
+人 / 任意 AI agent ─┤ add（schema 校验 + 平凡门 + 白话门 + 并发锁）├─▶ .whylog/events-YYYY.jsonl
                     └──────────────────────────────────────────────┘                     │
  Claude Code hooks：SessionStart → brief（注入未结任务 + RUNLOG 漂移）                     │
                     Stop        → nudge（裁决信号提醒落账，每会话至多一次）                ▼
-                                                                    render ─▶ .tasklog/view/*.html
+                                                                    render ─▶ .whylog/view/*.html
                                                                    （静态因果树，可折叠，禁手编）
                                                                     内嵌 git 仓 ─▶ add 即自动 commit 备份
 ```
