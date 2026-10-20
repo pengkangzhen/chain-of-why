@@ -8,7 +8,7 @@
 
 ```
                     ┌────────────── 写入口（唯一咽喉）──────────────┐
-人 / 任意 AI agent ─┤ add（schema 校验 + 平凡门 + 白话门 + 并发锁）├─▶ .whylog/events-YYYY.jsonl
+人 / 任意 AI agent ─┤ add（schema 校验 + 平凡门 + 白话门 + 并发锁）├─▶ .whylog/chain.jsonl
                     └──────────────────────────────────────────────┘                     │
  Claude Code hooks：SessionStart → brief（注入未结任务 + RUNLOG 漂移）                     │
                     Stop        → nudge（裁决信号提醒落账，每会话至多一次）                ▼
@@ -17,7 +17,7 @@
                                                                     内嵌 git 仓 ─▶ add 即自动 commit 备份
 ```
 
-- **数据**：JSONL 事件流，append-only，按年滚转；修正 = 新事件带 `supersedes`，历史不涂改
+- **数据**：单文件 JSONL 事件流（`chain.jsonl`），append-only；修正 = 新事件带 `supersedes`，历史不涂改
 - **触发**（hooks 层，全自动）：会话始注入状态、会话末检测「疑似有裁决未落账」并提醒；**提醒不代写**——写入永远由有上下文的 agent/人执行
 - **入口双门**：平凡词（排版/对齐/字体…）命中且无裁决信号 → 拒绝（`--raw` 显式放行）；黑话词（通道/口径/锚…）命中 → 警告 + 白话建议（词表在 config，可增删）
 - **多写者**：任何人、任何 agent（Claude Code / Codex / 未来工具）、甚至定时补账任务，都走同一个 CLI——规则长在咽喉上，不依赖谁读过说明书

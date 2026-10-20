@@ -37,19 +37,21 @@ def test_event_for_unknown_task_rejected(tmp_path):
         mod.build_tasks(events)
 
 
-def test_render_views_merges_yearly_files(tmp_path):
+def test_render_reads_handwritten_chain_and_appends(tmp_path):
     root = tmp_path / "tasklog"
     root.mkdir(parents=True)
-    (root / "events-2025.jsonl").write_text(
-        json.dumps({"ts": "2025-06-01T09:00", "by": "human", "task": "T-20250601-1",
-                    "type": "task.new", "title": "旧年任务", "unit": "u"}, ensure_ascii=False) + "\n",
+    (root / "chain.jsonl").write_text(
+        json.dumps({"ts": "2026-06-01T09:00", "by": "human", "task": "T-20260601-1",
+                    "type": "task.new", "title": "旧任务", "unit": "u"}, ensure_ascii=False) + "\n",
         encoding="utf-8")
     mod.append_event(root, {"ts": "2026-10-19T10:00", "by": "human", "task": "T-20261019-1",
-                            "type": "task.new", "title": "新年任务", "unit": "u"})
+                            "type": "task.new", "title": "新任务", "unit": "u"})
     written = mod.render_views(root)
-    assert {"index.html", "T-20250601-1.html", "T-20261019-1.html"} <= {p.name for p in written}
+    assert {"index.html", "T-20260601-1.html", "T-20261019-1.html"} <= {p.name for p in written}
     index = (root / "view" / "index.html").read_text(encoding="utf-8")
-    assert "旧年任务" in index and "新年任务" in index
+    assert "旧任务" in index and "新任务" in index
+    raw = (root / "chain.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(raw) == 2                                   # append lands in the same single file
 
 
 def test_brief_lists_open_tasks_only(tmp_path, capsys):
@@ -85,6 +87,30 @@ def test_task_tree_attaches_options_to_causes():
     assert i_cause < i_opt                                   # ref'd option nests under its cause
     assert html.index('<ul class="tree">', i_cause) < i_opt  # inside a sublist after the cause
     assert "全局方案" in html                                # unref'd option stays at task root
+
+
+def test_options_grouped_under_single_problem():
+    events = [
+        {"ts": "2026-10-17T15:00", "by": "h", "task": "T-1", "type": "task.new",
+         "title": "t", "unit": "1-risk/x"},
+        {"ts": "2026-10-17T15:01", "by": "h", "task": "T-1", "type": "obs", "text": "问题"},
+        {"ts": "2026-10-17T15:02", "by": "h", "task": "T-1", "type": "finding", "text": "原因"},
+        {"ts": "2026-10-17T15:03", "by": "h", "task": "T-1", "type": "option",
+         "option_id": "A", "text": "甲"},
+        {"ts": "2026-10-17T15:04", "by": "h", "task": "T-1", "type": "option",
+         "option_id": "B", "text": "乙"},
+        {"ts": "2026-10-17T15:05", "by": "h", "task": "T-1", "type": "option",
+         "option_id": "C", "text": "丙"},
+        {"ts": "2026-10-17T15:06", "by": "h", "task": "T-1", "type": "decision",
+         "chosen": "B", "rationale": "选乙"},
+        {"ts": "2026-10-17T15:07", "by": "h", "task": "T-1", "type": "status", "state": "decided"},
+    ]
+    tasks = mod.build_tasks(events)
+    html = mod.task_node(tasks["T-1"], tasks)
+    seq = ['tag">问题', 'tag">原因', "3 个备选", "A ·", "B ·", "C ·", 'tag-dec">裁决', "选乙", 'tag">状态']
+    pos = [html.index(x) for x in seq]
+    assert pos == sorted(pos)                                # full chain nests under the problem
+    assert "3 个备选" in html                                 # options collapsed into one node
 
 
 def test_backfill_ts_controls_id_date(tmp_path):

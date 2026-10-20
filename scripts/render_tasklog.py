@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tasklog -- append-only exploration/decision event log with static HTML views.
 
-Single source of truth:  .whylog/events-YYYY.jsonl (one JSON object per line, append-only).
+Single source of truth:  .whylog/chain.jsonl (one JSON object per line, append-only).
 Derived views (regenerable, never hand-edit): .whylog/view/index.html + <task-id>.html.
 Local only: .whylog/ is gitignored by the main repo; an inner git repo (if present)
 receives an automatic commit after every add.
@@ -66,21 +66,23 @@ SCHEMA = {
 def now_ts() -> str:
     return datetime.now().strftime("%Y-%m-%dT%H:%M")
 
-def events_files(root: Path) -> list[Path]:
-    return sorted(root.glob("events-*.jsonl"))
+def chain_file(root: Path) -> Path:
+    return root / "chain.jsonl"
 
 def load_events(root: Path) -> list[dict]:
+    fp = chain_file(root)
+    if not fp.exists():
+        return []
     events: list[dict] = []
-    for fp in events_files(root):
-        for ln, line in enumerate(fp.read_text(encoding="utf-8").splitlines(), 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                events.append(json.loads(line))
-            except json.JSONDecodeError as e:
-                raise SystemExit(f"[tasklog] {fp.name}:{ln} invalid JSON: {e}")
-    events.sort(key=lambda e: e.get("ts", ""))  # stable: file order breaks ties
+    for ln, line in enumerate(fp.read_text(encoding="utf-8").splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError as e:
+            raise SystemExit(f"[tasklog] {fp.name}:{ln} invalid JSON: {e}")
+    events.sort(key=lambda e: e.get("ts", ""))  # stable: physical order breaks ties
     return events
 
 def append_event(root: Path, ev: dict) -> None:
@@ -93,7 +95,7 @@ def append_event(root: Path, ev: dict) -> None:
     stray = set(ev) - {"ts", "by", "task", "type", *req, *opt}
     if stray:
         raise SystemExit(f"[tasklog] {ev['type']}: unknown fields {sorted(stray)}")
-    fp = root / f"events-{datetime.now().year}.jsonl"
+    fp = chain_file(root)
     fp.parent.mkdir(parents=True, exist_ok=True)
     with fp.open("a", encoding="utf-8") as f:
         f.write(json.dumps(ev, ensure_ascii=False) + "\n")
@@ -425,8 +427,18 @@ def _node(e: dict, inner: str = "") -> str:
         return f"<li><details open><summary>{line}</summary>{inner}</details></li>"
     return f"<li>{line}</li>"
 
+def _options_node(opts: list[dict]) -> list[str]:
+    """Render options: collapse >=2 siblings into one folded 方案（N 个备选） node."""
+    if len(opts) >= 2:
+        inner = f'<ul class="tree">{"".join(_node(o) for o in opts)}</ul>'
+        return [f'<li><details><summary><span class="tag">方案</span> '
+                f'<span class="meta">{len(opts)} 个备选</span></summary>{inner}</details></li>']
+    return [_node(o) for o in opts]
+
 def causal_children(t: dict, tasks: dict) -> list[str]:
-    """Ordered causal nodes (problem/cause/option/decision/status/link/note + subtasks)."""
+    """Causal chain. Single-problem task: everything hangs under the problem node
+    (问题 -> 原因s -> 方案s -> 裁决 -> 状态 -> 衔接/批注). Multi-problem: options/
+    decision/status stay at task level (task-wide convergence)."""
     problems: list[list] = []   # [obs, [findings...]] -- findings hang under the latest obs
     orphans: list[dict] = []    # findings that arrived before any obs
     opts_by_ref: dict[str, list] = {}  # option.ref (finding ts) -> options addressing that cause
@@ -438,30 +450,34 @@ def causal_children(t: dict, tasks: dict) -> list[str]:
             (problems[-1][1] if problems else orphans).append(e)
         elif e["type"] == "option":
             (opts_by_ref.setdefault(e["ref"], []) if e.get("ref") else root_opts).append(e)
+    tail = _options_node(root_opts)
+    cur = current_decision(t)
+    if cur:
+        tail.append(_node(cur))
+    last_status = next((e for e in reversed(t["events"]) if e["type"] == "status"), None)
+    if last_status:
+        tail.append(_node(last_status))
+    tail += [_node(e) for e in t["events"] if e["type"] == "link"]
+    tail += [_node(e) for e in t["events"] if e["type"] == "note"]
+    tail += [task_node(sub, tasks) for sub in tasks.values() if sub.get("parent") == t["id"]]
+    single = len(problems) == 1
     children = [_node(e) for e in orphans]
     for obs, causes in problems:
         cause_lis = []
         for c in causes:
-            subs = opts_by_ref.get(c["ts"], [])
-            sub = f'<ul class="tree">{"".join(_node(o) for o in subs)}</ul>' if subs else ""
+            subs = _options_node(opts_by_ref.get(c["ts"], []))
+            sub = f'<ul class="tree">{"".join(subs)}</ul>' if subs else ""
             cause_lis.append(_node(c, sub))
-        inner = f'<ul class="tree">{"".join(cause_lis)}</ul>' if cause_lis else ""
+        inner_lis = cause_lis + (tail if single else [])
+        inner = f'<ul class="tree">{"".join(inner_lis)}</ul>' if inner_lis else ""
         children.append(_node(obs, inner))
-    children += [_node(e) for e in root_opts]
+    if not single:
+        children += tail
     if not children:  # young task, no obs/option yet: fall back to contract purpose
         pur = t["contract"].get("purpose")
         if pur:
             children.append(f'<li><span class="tag">目的</span> '
                             f"<span>{esc(pur[:100] + ('…' if len(pur) > 100 else ''))}</span></li>")
-    cur = current_decision(t)
-    if cur:
-        children.append(_node(cur))
-    last_status = next((e for e in reversed(t["events"]) if e["type"] == "status"), None)
-    if last_status:
-        children.append(_node(last_status))
-    children += [_node(e) for e in t["events"] if e["type"] == "link"]
-    children += [_node(e) for e in t["events"] if e["type"] == "note"]
-    children += [task_node(sub, tasks) for sub in tasks.values() if sub.get("parent") == t["id"]]
     return children
 
 def task_node(t: dict, tasks: dict) -> str:
@@ -768,8 +784,9 @@ def run_nudge(root: Path) -> None:
     if marker.exists():
         return
     tp = str(hook.get("transcript_path") or "") or newest_transcript(REPO_ROOT)
-    ages = [time.time() - p.stat().st_mtime for p in events_files(root)]
-    reason = should_nudge(transcript_signals(tp), min(ages) if ages else None)
+    cf = chain_file(root)
+    age = time.time() - cf.stat().st_mtime if cf.exists() else None
+    reason = should_nudge(transcript_signals(tp), age)
     if reason:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text("1", encoding="utf-8")
@@ -778,7 +795,7 @@ def run_nudge(root: Path) -> None:
 def run_brief(root: Path) -> None:
     """Open tasks (active/decided) + RUNLOG drift, for session-start injection; silent when none."""
     lines: list[str] = []
-    if events_files(root):
+    if chain_file(root).exists():
         tasks = build_tasks(load_events(root))
         open_tasks = [t for t in tasks.values() if t["status"] in ("active", "decided")]
         if open_tasks:
