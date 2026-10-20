@@ -170,7 +170,20 @@ def test_should_nudge_requires_keyword_and_stale_ledger():
     assert mod.should_nudge("裁决：选定方案 B", 9999) is not None
     assert mod.should_nudge("改了个 typo", 9999) is None           # no decision signal
     assert mod.should_nudge("裁决：选定方案 B", 60) is None        # ledger fresh -> silent
-    assert mod.should_nudge("", None) is None                      # no distillate -> silent
+    assert mod.should_nudge("", None) is None                      # no signal source -> silent
+
+
+def test_transcript_signals_extracts_text_messages(tmp_path):
+    tp = tmp_path / "session.jsonl"
+    tp.write_text(
+        '{"type":"user","message":{"content":"我们敲定方案 B 吧"}}\n'
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"好的，已选定 B"}]}}\n'
+        '{"type":"system","message":{"content":"meta 裁决"}}\n'
+        'partial-garbage-line\n', encoding="utf-8")
+    sig = mod.transcript_signals(str(tp))
+    assert "敲定" in sig and "选定 B" in sig
+    assert "meta 裁决" not in sig                    # non-conversation lines skipped
+    assert mod.transcript_signals(str(tmp_path / "nope.jsonl")) == ""
 
 
 def test_add_gates_trivial_reject_and_jargon_warn(capsys):

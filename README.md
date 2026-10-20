@@ -70,9 +70,9 @@ uv run --no-sync python scripts/render_tasklog.py render --open
 4. **白话优先**：先说人话，专名放句尾括号——总览页是叙事视图不是术语表
 5. **宁缺勿滥**：纯排版/微调不入账；「这行改动一年后还值得被知道吗」是入账判据
 
-## 与 .remember（会话记忆插件）组合
+## 信号源（自含，零外部依赖）
 
-`nudge` 会读 `.remember/now.md`（[remember 插件](https://github.com/Digital-Process-Tools/claude-remember)的自动蒸馏产物）作为裁决信号输入——**过程记忆管蒸馏，裁决账本管结构化**，两者互补；无 .remember 时静默跳过。
+`nudge` 直接读**会话记录尾部**：Stop hook 的 stdin 自带 `transcript_path`（缺省时按项目 slug 回退到最新 jsonl），只取 user/assistant 的文本消息（尾部 200KB），对裁决信号词做匹配。不读第三方插件的内部文件、不调 LLM——grep 一手信号源即可。与会话记忆类插件（如 [remember](https://github.com/Digital-Process-Tools/claude-remember)）互不依赖、互不干扰：过程归它，裁决归 Task Thread。
 
 ## Config（configs/tasklog/config.json）
 

@@ -33,6 +33,7 @@ import argparse
 import html
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -715,6 +716,46 @@ def should_nudge(entries_text: str, last_event_age_s: float | None) -> str | Non
     return (f"检测到疑似未落账的裁决信号（{words}）。若本会话确有方案选择/裁决，"
             f"请用 render_tasklog.py add 落账后结束；确无则直接结束（每会话至多提醒一次）。")
 
+def transcript_signals(transcript_path: str, tail_bytes: int = 200_000) -> str:
+    """Recent human/assistant text from a Claude Code session transcript -- the
+    self-contained signal source for nudge (grep-only: no distillation needed)."""
+    try:
+        with open(transcript_path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - tail_bytes))
+            chunk = f.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return ""
+    texts: list[str] = []
+    for line in chunk.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("type") not in ("user", "assistant"):
+            continue
+        content = (entry.get("message") or {}).get("content")
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            texts.append(" ".join(p.get("text", "") for p in content
+                                  if isinstance(p, dict) and p.get("type") == "text"))
+    return "\n".join(texts)
+
+def newest_transcript(repo_root: Path) -> str:
+    """Newest session jsonl under ~/.claude/projects/<slug>/ (fallback when the hook
+    payload carries no transcript_path)."""
+    slug = re.sub(r"[^a-zA-Z0-9]", "-", str(repo_root))
+    d = Path.home() / ".claude" / "projects" / slug
+    try:
+        return str(max(d.glob("*.jsonl"), key=lambda p: p.stat().st_mtime))
+    except ValueError:
+        return ""
+
 def run_nudge(root: Path) -> None:
     """Stop hook: read hook JSON on stdin, block-once with the nudge reminder."""
     raw = sys.stdin.read() if not sys.stdin.isatty() else ""
@@ -726,12 +767,9 @@ def run_nudge(root: Path) -> None:
     marker = root / "tmp" / f"nudged-{sid}"
     if marker.exists():
         return
-    texts = []
-    now_fp = root.parent / ".remember" / "now.md"
-    if now_fp.exists():
-        texts.append(now_fp.read_text(encoding="utf-8", errors="ignore"))
+    tp = str(hook.get("transcript_path") or "") or newest_transcript(REPO_ROOT)
     ages = [time.time() - p.stat().st_mtime for p in events_files(root)]
-    reason = should_nudge("\n".join(texts), min(ages) if ages else None)
+    reason = should_nudge(transcript_signals(tp), min(ages) if ages else None)
     if reason:
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text("1", encoding="utf-8")
