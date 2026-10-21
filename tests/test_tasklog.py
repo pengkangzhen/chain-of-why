@@ -108,7 +108,8 @@ def test_options_grouped_under_single_problem():
     ]
     tasks = mod.build_tasks(events)
     html = mod.task_node(tasks["T-1"], tasks)
-    seq = ['tag">问题', 'tag">原因', "3 个备选", "A ·", "B ·", "C ·", 'tag-dec">裁决', "选乙", 'tag">状态']
+    seq = ['tag t-obs">问题', 'tag t-finding">原因', "3 个备选", "A ·", "B ·", "C ·",
+           'tag t-decision">裁决', "选乙", 'tag t-status">状态']
     pos = [html.index(x) for x in seq]
     assert pos == sorted(pos)                                # full chain nests under the problem
     assert "3 个备选" in html                                 # options collapsed into one node

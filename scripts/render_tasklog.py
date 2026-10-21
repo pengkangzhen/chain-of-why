@@ -169,27 +169,80 @@ def inner_git_commit(root: Path, msg: str) -> None:
 # ---------------------------------------------------------------- HTML views
 
 CSS = """
-:root{--ink:#1f2937;--muted:#6b7280;--line:#e5e7eb;--bg:#f6f7f9;--blue:#1d4ed8;
---violet:#6d28d9;--green:#15803d;--gray:#6b7280}
+:root{--ink:#1f2937;--muted:#6b7280;--line:#e5e7eb;--bg:#f6f7f9;--hover:#f1f5f9;
+--blue:#1d4ed8;--violet:#6d28d9;--green:#15803d;--gray:#6b7280}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);
-font:15px/1.65 system-ui,-apple-system,"Hiragino Sans GB","Microsoft YaHei",sans-serif}
-.wrap{max-width:1080px;margin:0 auto;padding:24px 20px 60px}
+font:14px/1.6 system-ui,-apple-system,"Hiragino Sans GB","Microsoft YaHei",sans-serif}
+.wrap{max-width:1280px;margin:0 auto;padding:20px 20px 60px}
 .brand{font-weight:700;letter-spacing:.08em;color:var(--muted);text-transform:uppercase;font-size:12px}
-h1{font-size:22px;margin:4px 0 8px} h2{font-size:15px;margin:26px 0 10px;color:var(--muted);letter-spacing:.04em}
-.goal{color:var(--muted);font-size:13.5px;margin:0 0 14px;max-width:76ch}
+h1{font-size:21px;margin:4px 0 8px} h2{font-size:14px;margin:24px 0 10px;color:var(--muted);letter-spacing:.04em}
+.goal{color:var(--muted);font-size:13.5px;margin:0 0 12px;max-width:76ch}
 a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
-.card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:12px}
+.meta{color:var(--muted);font-size:12.5px}
 .chip{display:inline-block;padding:1px 10px;border-radius:999px;font-size:12px;font-weight:600}
 .c-active{background:#dbeafe;color:var(--blue)} .c-decided{background:#ede9fe;color:var(--violet)}
-.c-promoted{background:#dcfce7;color:var(--green)} .c-dropped{background:#f3f4f6;color:var(--gray)}
-.meta{color:var(--muted);font-size:13px}
-blockquote{margin:0 0 10px;padding:8px 14px;border-left:3px solid #93c5fd;background:#f8fafc;
-border-radius:0 8px 8px 0}
+.c-promoted{background:#dcfce7;color:var(--green)} .c-dropped{background:#f3f4f6;color:var(--gray);text-decoration:line-through}
+/* ---- filter bar (IDE-log style) ---- */
+.bar{position:sticky;top:0;z-index:5;display:flex;gap:8px;align-items:center;flex-wrap:wrap;
+background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:0 0 14px}
+.bar input{border:1px solid var(--line);border-radius:8px;padding:4px 10px;font-size:13px;min-width:200px;outline:none}
+.bar input:focus{border-color:var(--blue)}
+.fch{border:1px solid var(--line);background:#fff;border-radius:999px;padding:1px 10px;
+font-size:12px;cursor:pointer;color:var(--muted)}
+.fch:hover{border-color:var(--muted)}
+.fch.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+/* ---- stage panels ---- */
+details.tp{border:1px solid var(--line);border-radius:10px;background:#fff;margin-bottom:14px;overflow:hidden}
+.tp-h{display:flex;align-items:center;gap:10px;padding:9px 14px;cursor:pointer;list-style:none;background:#fbfcfd}
+.tp-h::before{content:"";width:4px;height:15px;border-radius:2px;background:var(--blue)}
+.tp-h::-webkit-details-marker{display:none}
+.tp-h .meta{margin-left:auto}
+.tp-h::after{content:"▾";color:var(--muted);font-size:11px}
+details.tp:not([open])>.tp-h::after{content:"▸"}
+.tp-b{padding:6px 12px 10px}
+li.no-hit{display:none} details.tp.no-hit{display:none}
+/* ---- causal tree with role lanes (git-graph style) ---- */
+.tree{list-style:none;margin:0;padding:0}
+.tree ul{list-style:none;margin:0;padding:0}
+.tree li{position:relative;padding:1px 0 1px 24px}
+.tree li::before{content:"";position:absolute;left:9px;top:0;height:100%;border-left:2px solid var(--lane,var(--line))}
+.tree li::after{content:"";position:absolute;left:9px;top:14px;width:13px;border-top:2px solid var(--lane,var(--line))}
+.tree li:last-child::before{height:14px}
+.tree>li{padding-left:4px}
+.tree>li::before,.tree>li::after{display:none}
+.n-obs{--lane:#93c5fd}.n-finding{--lane:#fcd34d}.n-option{--lane:#67e8f9}.n-decision{--lane:#c4b5fd}
+.n-status{--lane:#cbd5e1}.n-impact{--lane:#fda4af}.n-link{--lane:#5eead4}.n-note{--lane:#d6d3d1}
+/* ---- node rows (log-panel density) ---- */
+.row{display:grid;grid-template-columns:50px 84px minmax(0,1fr) auto;gap:10px;align-items:baseline;
+padding:2px 6px 2px 18px;border-radius:6px;position:relative}
+.row:hover{background:var(--hover)}
+summary.row{cursor:pointer;list-style:none}
+summary.row::-webkit-details-marker{display:none}
+summary.row::before{content:"▸";position:absolute;left:4px;top:50%;transform:translateY(-55%);
+font-size:9px;color:var(--muted)}
+details[open]>summary.row::before{content:"▾"}
+.trow{grid-template-columns:50px minmax(0,1fr) auto auto}
+.trow .ts-meta{max-width:34ch;overflow:hidden;text-overflow:ellipsis}
+.tag{flex:none;display:inline-block;padding:0 7px;border-radius:6px;font-size:11.5px;font-weight:600;text-align:center}
+.t-task{background:#1f2937;color:#fff}
+.t-obs{background:#dbeafe;color:#1d4ed8}
+.t-finding{background:#fef3c7;color:#b45309}
+.t-option{background:#cffafe;color:#0e7490}
+.t-decision{background:#6d28d9;color:#fff}
+.t-status{background:#f1f5f9;color:#475569}
+.t-impact{background:#ffe4e6;color:#be123c}
+.t-link{background:#ccfbf1;color:#0f766e}
+.t-note{background:#f5f5f4;color:#57534e}
+.ts{color:var(--muted);font:11.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap}
+.ts-meta{color:var(--muted);font-size:12px;white-space:nowrap}
+.tx{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* ---- task card page ---- */
+.card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px}
+blockquote{margin:0 0 10px;padding:8px 14px;border-left:3px solid #93c5fd;background:#f8fafc;border-radius:0 8px 8px 0}
 .tl{list-style:none;margin:0;padding:0}
 .tl li{position:relative;padding:0 0 14px 22px;border-left:2px solid var(--line)}
-.tl li::before{content:"";position:absolute;left:-5px;top:6px;width:8px;height:8px;
-border-radius:50%;background:var(--blue)}
+.tl li::before{content:"";position:absolute;left:-5px;top:6px;width:8px;height:8px;border-radius:50%;background:var(--blue)}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
 .opt{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:#fff}
 .opt.chosen{border-color:var(--green);background:#f0fdf4;box-shadow:0 0 0 1px var(--green)}
@@ -202,28 +255,44 @@ code{background:#f3f4f6;border-radius:4px;padding:1px 6px;font-size:12.5px;
 font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .note-h{border-left:4px solid #b45309} .note-a{border-left:4px solid #93c5fd}
 .ev{font-size:13.5px;padding:6px 0;border-bottom:1px dashed var(--line)}
-.tp{padding:10px 14px;margin-bottom:10px}
-.tp-h{display:flex;justify-content:flex-start;align-items:baseline;gap:10px;border-bottom:1px solid var(--line);padding-bottom:6px;margin-bottom:4px;cursor:pointer;list-style:none}
-.tp-h .chip{margin-left:auto}
-.tsum{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
-.tsum .chip{margin-left:auto}
-.tp-h::-webkit-details-marker{display:none}
-.tp-h::before{content:"▸";color:var(--muted);margin-right:8px;font-size:11px}
-details.tp[open]>.tp-h::before{content:"▾"}
-.tree{list-style:none;margin:6px 0 0;padding:0}
-.tree ul{list-style:none;margin:0;padding:0}
-.tree li{position:relative;padding:3px 0 3px 20px}
-.tree li::before{content:"";position:absolute;left:7px;top:0;height:100%;border-left:1px solid var(--line)}
-.tree li::after{content:"";position:absolute;left:7px;top:16px;width:12px;border-top:1px solid var(--line)}
-.tree li:last-child::before{height:16px}
-.tree summary{list-style:none;cursor:pointer}
-.tree summary::-webkit-details-marker{display:none}
-.tree summary::before{content:"▸";color:var(--muted);margin-right:6px;font-size:11px}
-.tree details[open]>summary::before{content:"▾"}
-.tag{flex:none;display:inline-block;padding:0 8px;border-radius:6px;background:#f3f4f6;color:var(--muted);font-size:12px;font-weight:600}
-.tag-dec{background:#ede9fe;color:var(--violet)}
 footer{margin-top:30px;color:var(--muted);font-size:12px;text-align:center}
 """
+
+BAR = ('<div class="bar"><input id="q" type="search" placeholder="筛选：文本 / 角色 / 状态…">'
+       '<span class="fchips" id="fchips">'
+       '<button class="fch on" data-f="all">全部</button>'
+       '<button class="fch" data-f="t-obs">问题</button>'
+       '<button class="fch" data-f="t-finding">原因</button>'
+       '<button class="fch" data-f="t-option">方案</button>'
+       '<button class="fch" data-f="t-decision">裁决</button>'
+       '<button class="fch" data-f="t-status">状态</button>'
+       '<button class="fch" data-f="t-task">任务</button>'
+       '<button class="fch" data-f="open">未结</button></span>'
+       '<span class="meta" id="cnt"></span></div>')
+
+SCRIPT = """
+<script>
+const q=document.getElementById('q');let mode='all';
+function tag(li){return li.querySelector(':scope>.row .tag, :scope>details>summary.row .tag');}
+function match(li){const t=tag(li);const role=t?t.className:'';
+ if(mode!=='all'&&mode!=='open'&&!role.includes(mode))return false;
+ if(mode==='open'&&!li.querySelector(':scope .chip.c-active, :scope .chip.c-decided'))return false;
+ const s=q.value.trim().toLowerCase();return !s||li.textContent.toLowerCase().includes(s);}
+function mark(li){let hit=match(li);
+ li.querySelectorAll(':scope>details>ul>li, :scope>ul>li').forEach(c=>{if(mark(c))hit=true;});
+ li.classList.toggle('no-hit',!hit);return hit;}
+function apply(){const lis=[...document.querySelectorAll('.tp-b li')];
+ document.querySelectorAll('.tp-b>.tree>li').forEach(mark);
+ document.querySelectorAll('details.tp').forEach(tp=>{
+  tp.classList.toggle('no-hit',!tp.querySelector('.tp-b li:not(.no-hit)'));});
+ const vis=lis.filter(li=>!li.classList.contains('no-hit')).length;
+ document.getElementById('cnt').textContent=vis+' / '+lis.length+' 节点';}
+q.addEventListener('input',apply);
+document.querySelectorAll('.fch').forEach(b=>b.addEventListener('click',()=>{
+ document.querySelectorAll('.fch').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+ mode=b.dataset.f;apply();}));
+apply();
+</script>"""
 
 def esc(v) -> str:
     return html.escape(str(v if v is not None else ""))
@@ -426,19 +495,23 @@ def event_preview(e: dict) -> str:
 def _node(e: dict, inner: str = "") -> str:
     p = event_preview(e)
     tag = ROLE_ZH.get(e["type"], e["type"])
-    cls = "tag tag-dec" if e["type"] == "decision" else "tag"
+    role = e["type"].split(".")[0]
+    short_ts = e["ts"][5:].replace("T", " ")      # 10-19 09:34 (full ts in title attr)
     text = esc(p[:100] + ("…" if len(p) > 100 else ""))
-    line = f'<span class="{cls}">{tag}</span> <span class="meta">{esc(e["ts"])}</span> {text}'
+    row = (f'<span class="tag t-{role}">{tag}</span>'
+           f'<span class="ts" title="{esc(e["ts"])}">{esc(short_ts)}</span>'
+           f'<span class="tx" title="{esc(p)}">{text}</span>')
     if inner:  # nodes with children are collapsible
-        return f"<li><details open><summary>{line}</summary>{inner}</details></li>"
-    return f"<li>{line}</li>"
+        return f'<li class="n-{role}"><details open><summary class="row">{row}</summary>{inner}</details></li>'
+    return f'<li class="n-{role}"><div class="row">{row}</div></li>'
 
 def _options_node(opts: list[dict]) -> list[str]:
     """Render options: collapse >=2 siblings into one folded 方案（N 个备选） node."""
     if len(opts) >= 2:
         inner = f'<ul class="tree">{"".join(_node(o) for o in opts)}</ul>'
-        return [f'<li><details><summary><span class="tag">方案</span> '
-                f'<span class="meta">{len(opts)} 个备选</span></summary>{inner}</details></li>']
+        return [f'<li class="n-option"><details><summary class="row">'
+                f'<span class="tag t-option">方案</span>'
+                f'<span class="tx ts-meta">{len(opts)} 个备选</span></summary>{inner}</details></li>']
     return [_node(o) for o in opts]
 
 def causal_children(t: dict, tasks: dict) -> list[str]:
@@ -482,13 +555,14 @@ def causal_children(t: dict, tasks: dict) -> list[str]:
     if not children:  # young task, no obs/option yet: fall back to contract purpose
         pur = t["contract"].get("purpose")
         if pur:
-            children.append(f'<li><span class="tag">目的</span> '
-                            f"<span>{esc(pur[:100] + ('…' if len(pur) > 100 else ''))}</span></li>")
+            children.append(f'<li class="n-task"><div class="row"><span class="tag t-task">目的</span>'
+                            f'<span class="tx">{esc(pur[:100] + ("…" if len(pur) > 100 else ""))}</span></div></li>')
     return children
 
 def task_node(t: dict, tasks: dict) -> str:
-    summary = (f'<summary class="tsum"><a href="{esc(t["id"])}.html">{esc(t["title"])}</a> '
-               f'<span class="meta">{esc(t["id"])} · {esc(t["unit"])}</span>'
+    summary = (f'<summary class="row trow"><span class="tag t-task">任务</span>'
+               f'<a class="tx" href="{esc(t["id"])}.html">{esc(t["title"])}</a>'
+               f'<span class="ts-meta">{esc(t["id"])} · {esc(t["unit"])}</span>'
                f'<span class="chip c-{t["status"]}">{STATUS_ZH.get(t["status"], t["status"])}</span></summary>')
     kids = causal_children(t, tasks)
     body = f'<ul class="tree">{"".join(kids)}</ul>' if kids else ""
@@ -502,14 +576,14 @@ def index_page(tasks: dict, stages: list[tuple[str, str]], goal: str = "") -> st
         header += f'<div class="goal">{esc(goal)}</div>'
     header += f"<div>{chips}</div>"
 
-    body = []
+    body = [BAR]
     for label, group in stage_sections(tasks, stages):
         roots = [t for t in sorted(group, key=lambda x: x["ts1"]) if t.get("parent") not in tasks]
         lis = "".join(task_node(t, tasks) for t in roots)
-        body.append(f'<details class="card tp" open><summary class="tp-h">{esc(label)} '
+        body.append(f'<details class="tp" open><summary class="tp-h">{esc(label)} '
                     f'<span class="meta">{len(group)} 任务</span></summary>'
-                    f'<ul class="tree">{lis}</ul></details>')
-    return _page("index", header, "".join(body))
+                    f'<div class="tp-b"><ul class="tree">{lis}</ul></div></details>')
+    return _page("index", header, "".join(body) + SCRIPT)
 
 def render_views(root: Path) -> list[Path]:
     view = root / "view"
