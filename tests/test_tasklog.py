@@ -97,7 +97,8 @@ def test_options_grouped_under_single_problem():
         {"ts": "2026-10-17T15:00", "by": "h", "task": "T-1", "type": "task.new",
          "title": "t", "unit": "1-risk/x"},
         {"ts": "2026-10-17T15:01", "by": "h", "task": "T-1", "type": "obs", "text": "问题"},
-        {"ts": "2026-10-17T15:02", "by": "h", "task": "T-1", "type": "finding", "text": "原因"},
+        {"ts": "2026-10-17T15:02", "by": "h", "task": "T-1", "type": "finding",
+         "text": "原因", "kind": "cause"},
         {"ts": "2026-10-17T15:03", "by": "h", "task": "T-1", "type": "option",
          "option_id": "A", "text": "甲"},
         {"ts": "2026-10-17T15:04", "by": "h", "task": "T-1", "type": "option",
@@ -110,7 +111,7 @@ def test_options_grouped_under_single_problem():
     ]
     tasks = mod.build_tasks(events)
     html = mod.task_node(tasks["T-1"], tasks)
-    seq = ['tag t-obs">问题', 'tag t-finding">原因', "3 个备选", "A ·", "B ·", "C ·",
+    seq = ['tag t-obs">问题', 'k-cause">原因', "3 个备选", "A ·", "B ·", "C ·",
            'tag t-decision">裁决', "选乙", 'tag t-status">状态']
     pos = [html.index(x) for x in seq]
     assert pos == sorted(pos)                                # full chain nests under the problem
@@ -272,6 +273,19 @@ def test_decision_gate_requires_user_attestation():
     mod.check_gates(dec, wl, raw=False, user_approved=True)  # attested record passes
     mod.check_gates({**dec, "by": "human"}, wl, raw=False)   # human decides, no attestation
     mod.check_gates(dec, wl, raw=True)                       # --raw explicit override
+
+
+def test_finding_kinds_render_closed_triad_badges():
+    tasks = mod.build_tasks([
+        {"ts": "2026-10-01T10:00", "by": "h", "task": "T-1", "type": "task.new",
+         "title": "t", "unit": "u"},
+        {"ts": "2026-10-01T10:01", "by": "h", "task": "T-1", "type": "finding",
+         "text": "调研结果", "kind": "survey"},
+        {"ts": "2026-10-01T10:02", "by": "h", "task": "T-1", "type": "finding", "text": "旧发现"},
+    ])
+    html = mod.task_node(tasks["T-1"], tasks)
+    assert 'k-survey">调研' in html                # kind badge (closed triad)
+    assert '">发现</span>' in html                  # legacy no-kind falls back to 发现
 
 
 def test_chain_page_roots_stage_question_and_chains_events():

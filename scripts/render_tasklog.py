@@ -10,7 +10,7 @@ Usage (repo root):
   uv run --no-sync python scripts/render_tasklog.py add task --title "..." --unit "..." [--parent ID]
       [--purpose ... --input ... --action ... --output ...]
   uv run --no-sync python scripts/render_tasklog.py add obs     --task @last --text "..."
-  uv run --no-sync python scripts/render_tasklog.py add finding --task @last --text "..." [--evidence path]
+  uv run --no-sync python scripts/render_tasklog.py add finding --task @last --text "..." --kind {survey,cause,trial} [--evidence path]
   uv run --no-sync python scripts/render_tasklog.py add option  --task @last --opt-id A --text "..." [--effect ... --cost ...]
   uv run --no-sync python scripts/render_tasklog.py add decision --task @last --chosen A --rationale "..."
       [--paper-line ... --system-line ... --supersedes TS --user-approved]
@@ -46,14 +46,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STATUSES = ("active", "decided", "promoted", "dropped")
 STATUS_ZH = {"active": "进行中", "decided": "已裁决", "promoted": "已转正", "dropped": "已废弃"}
 # chain-role labels for the timeline view (narrative register; ledger terms live on task cards)
-ROLE_ZH = {"task.new": "任务", "obs": "问题", "finding": "原因", "option": "方案",
+ROLE_ZH = {"task.new": "任务", "obs": "问题", "finding": "发现", "option": "方案",
            "decision": "裁决", "impact": "影响", "link": "衔接", "status": "状态", "note": "批注"}
+# closed triad of knowledge origins: external survey / internal diagnosis / empirical trial
+KIND_ZH = {"survey": "调研", "cause": "原因", "trial": "实证"}
 
 # event type -> (required payload keys, optional payload keys); meta keys: ts/by/task/type
 SCHEMA = {
     "task.new": (["title", "unit"], ["parent", "purpose", "input", "action", "output"]),
     "obs": (["text"], ["evidence"]),
-    "finding": (["text"], ["evidence"]),
+    "finding": (["text"], ["evidence", "kind"]),
     "option": (["option_id", "text"], ["effect", "cost", "ref"]),
     "decision": (["chosen", "rationale"], ["paper_line", "system_line", "supersedes"]),
     "impact": (["text"], []),
@@ -218,7 +220,10 @@ details[open]>summary.row::before{content:"▾"}
 .tag{flex:none;display:inline-block;padding:0 7px;border-radius:6px;font-size:11.5px;font-weight:600;text-align:center}
 .t-task{background:#1f2937;color:#fff}
 .t-obs{background:#dbeafe;color:#1d4ed8}
-.t-finding{background:#fef3c7;color:#b45309}
+.t-finding{background:#f3f4f6;color:#4b5563}
+.k-survey{background:#e0f2fe;color:#0369a1}
+.k-cause{background:#fef3c7;color:#b45309}
+.k-trial{background:#dcfce7;color:#15803d}
 .t-option{background:#cffafe;color:#0e7490}
 .t-decision{background:#6d28d9;color:#fff}
 .t-status{background:#f1f5f9;color:#475569}
@@ -494,14 +499,16 @@ def event_preview(e: dict) -> str:
 
 def _node(e: dict, inner: str = "", tasks: dict | None = None) -> str:
     p = event_preview(e)
-    tag = ROLE_ZH.get(e["type"], e["type"])
+    tag = (KIND_ZH.get(e.get("kind"), ROLE_ZH["finding"]) if e["type"] == "finding"
+           else ROLE_ZH.get(e["type"], e["type"]))
     role = e["type"].split(".")[0]
+    kcls = f" k-{e['kind']}" if e["type"] == "finding" and e.get("kind") else ""
     short_ts = e["ts"][5:].replace("T", " ")      # 10-19 09:34 (full ts in title attr)
     if e["type"] == "link" and tasks and e.get("to") in tasks:
         text = f'<a href="{esc(e["to"])}.html">→ {esc(e["to"])}</a> · {esc(e.get("why", ""))}'
     else:
         text = esc(p[:100] + ("…" if len(p) > 100 else ""))
-    row = (f'<span class="tag t-{role}">{tag}</span>'
+    row = (f'<span class="tag t-{role}{kcls}">{tag}</span>'
            f'<span class="ts" title="{esc(e["ts"])}">{esc(short_ts)}</span>'
            f'<span class="tx" title="{esc(p)}">{text}</span>'
            + (f'<span class="evd" title="{esc(e["evidence"])}">{esc(e["evidence"])}</span>'
@@ -762,6 +769,9 @@ def build_add_parser(add: argparse.ArgumentParser) -> None:
         with_task(s)
         s.add_argument("--text", required=True)
         s.add_argument("--evidence")
+        if name == "finding":
+            s.add_argument("--kind", required=True, choices=("survey", "cause", "trial"),
+                           help="survey=调研(外部考察) cause=原因(内部诊断) trial=实证(实验测量)")
         with_by(s)
 
     s = at.add_parser("option")
@@ -810,7 +820,7 @@ def build_add_parser(add: argparse.ArgumentParser) -> None:
 
 PAYLOAD_KEYS = {
     "obs": ("text", "evidence"),
-    "finding": ("text", "evidence"),
+    "finding": ("text", "evidence", "kind"),
     "option": ("option_id", "text", "effect", "cost", "ref"),
     "decision": ("chosen", "rationale", "paper_line", "system_line", "supersedes"),
     "impact": ("text",),

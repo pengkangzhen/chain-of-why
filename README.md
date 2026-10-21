@@ -57,7 +57,7 @@ python3 scripts/render_tasklog.py doctor   # store/views/hooks/config/lock 健�
 |---|---|---|---|
 | task.new | title, unit | parent, purpose, input, action, output | 建任务（ID=T-YYYYMMDD-N，契约四项） |
 | obs | text | evidence | 问题入口 |
-| finding | text | evidence | 诊断链一步（挂最近的问题下） |
+| finding | text, kind | evidence | 发现（封闭三源 kind：survey 调研=外部考察 / cause 原因=内部诊断 / trial 实证=实验测量） |
 | option | option_id, text | effect, cost, ref | 备选方案（ref=所治原因的 ts，视图挂树） |
 | decision | chosen, rationale | paper_line, system_line, supersedes | 裁决（双口径强制成字段；agent 记录须 `--user-approved` 见证用户拍板） |
 | impact | text | | 改动与接口影响 |
