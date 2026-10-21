@@ -19,7 +19,7 @@
 
 - **数据**：单文件 JSONL 事件流（`chain.jsonl`），append-only；修正 = 新事件带 `supersedes`，历史不涂改
 - **触发**（hooks 层，全自动）：会话始注入状态、会话末检测「疑似有裁决未落账」并提醒；**提醒不代写**——写入永远由有上下文的 agent/人执行
-- **入口双门**：平凡词（排版/对齐/字体…）命中且无裁决信号 → 拒绝（`--raw` 显式放行）；黑话词（通道/口径/锚…）命中 → 警告 + 白话建议（词表在 config，可增删）
+- **入口三门**：平凡词（排版/对齐/字体…）命中且无裁决信号 → 拒绝；黑话词（通道/口径/锚…）命中 → 警告 + 白话建议；**裁决见证**——agent 写 decision 须 `--user-approved`，裁决权在用户，agent 只记录不定案（均可 `--raw` 显式放行；词表在 config，可增删）
 - **多写者**：任何人、任何 agent（Claude Code / Codex / 未来工具）、甚至定时补账任务，都走同一个 CLI——规则长在咽喉上，不依赖谁读过说明书
 
 ## Quick start
@@ -59,7 +59,7 @@ python3 scripts/render_tasklog.py doctor   # store/views/hooks/config/lock 健�
 | obs | text | evidence | 问题入口 |
 | finding | text | evidence | 诊断链一步（挂最近的问题下） |
 | option | option_id, text | effect, cost, ref | 备选方案（ref=所治原因的 ts，视图挂树） |
-| decision | chosen, rationale | paper_line, system_line, supersedes | 裁决（双口径强制成字段） |
+| decision | chosen, rationale | paper_line, system_line, supersedes | 裁决（双口径强制成字段；agent 记录须 `--user-approved` 见证用户拍板） |
 | impact | text | | 改动与接口影响 |
 | link | to, why | | 跨任务衔接 |
 | status | state | note, method_doc | active/decided/promoted/dropped |
@@ -74,6 +74,7 @@ python3 scripts/render_tasklog.py doctor   # store/views/hooks/config/lock 健�
 3. **规则长在写入口**：过滤、白话、锁、校验全部在 CLI 内聚，对任何调用方呈现同一契约
 4. **白话优先**：先说人话，专名放句尾括号——总览页是叙事视图不是术语表
 5. **宁缺勿滥**：纯排版/微调不入账；「这行改动一年后还值得被知道吗」是入账判据
+6. **裁决权在用户**：agent 调研、建议、记账，但 decision 定案须 `--user-approved` 见证用户在对话中的明确拍板——账本记录裁决，不产生裁决
 
 ## 信号源（自含，零外部依赖）
 

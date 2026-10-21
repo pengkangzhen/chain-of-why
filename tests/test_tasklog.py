@@ -258,3 +258,13 @@ def test_transcript_signals_full_file_no_loss(tmp_path):
     tp.write_text('{"type":"user","message":{"content":"早期敲定方案 B"}}\n' + pad, encoding="utf-8")
     sig = mod.transcript_signals(str(tp))
     assert "敲定方案 B" in sig                    # early line still seen: no tail-window loss
+
+
+def test_decision_gate_requires_user_attestation():
+    wl = {}
+    dec = {"type": "decision", "by": "claude-code", "chosen": "B", "rationale": "r"}
+    with pytest.raises(SystemExit):
+        mod.check_gates(dec, wl, raw=False)                  # agent self-ruling rejected
+    mod.check_gates(dec, wl, raw=False, user_approved=True)  # attested record passes
+    mod.check_gates({**dec, "by": "human"}, wl, raw=False)   # human decides, no attestation
+    mod.check_gates(dec, wl, raw=True)                       # --raw explicit override

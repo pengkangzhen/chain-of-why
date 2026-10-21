@@ -13,7 +13,7 @@ Usage (repo root):
   uv run --no-sync python scripts/render_tasklog.py add finding --task @last --text "..." [--evidence path]
   uv run --no-sync python scripts/render_tasklog.py add option  --task @last --opt-id A --text "..." [--effect ... --cost ...]
   uv run --no-sync python scripts/render_tasklog.py add decision --task @last --chosen A --rationale "..."
-      [--paper-line ... --system-line ... --supersedes TS]
+      [--paper-line ... --system-line ... --supersedes TS --user-approved]
   uv run --no-sync python scripts/render_tasklog.py add impact  --task @last --text "..."
   uv run --no-sync python scripts/render_tasklog.py add link    --task @last --to ID --why "..."
   uv run --no-sync python scripts/render_tasklog.py add status  --task @last --state {active,decided,promoted,dropped}
@@ -370,12 +370,17 @@ def load_wordlists(repo_root: Path) -> dict:
     except (json.JSONDecodeError, OSError):
         return {}
 
-def check_gates(ev: dict, wordlists: dict, raw: bool) -> None:
+def check_gates(ev: dict, wordlists: dict, raw: bool, user_approved: bool = False) -> None:
     """Entry gates on the single write chokepoint: reject trivial-change events
-    (bypass with --raw), warn on jargon (discipline: plain words first)."""
+    (bypass with --raw), reject unattested agent decisions (rulings belong to
+    the human -- the agent records decisions, it never makes them), warn on
+    jargon (discipline: plain words first)."""
     text = " ".join(str(v) for k, v in ev.items()
                     if k in ("title", "purpose", "text", "rationale", "note") and v)
     if not raw:
+        if ev["type"] == "decision" and ev.get("by") != "human" and not user_approved:
+            raise SystemExit("[tasklog] 裁决权在用户：agent 记 decision 须 --user-approved"
+                             "（见证用户已在对话中明确拍板）；模型自拟结论请记 finding/note，勿定案")
         trivial = wordlists.get("trivial", [])
         if trivial and not any(w in text for w in NUDGE_WORDS):
             hits = [w for w in trivial if w in text]
@@ -567,6 +572,9 @@ def build_add_parser(add: argparse.ArgumentParser) -> None:
     s.add_argument("--paper-line")
     s.add_argument("--system-line")
     s.add_argument("--supersedes", help="ts of the decision event this one replaces")
+    s.add_argument("--user-approved", action="store_true", dest="user_approved",
+                   help="attest the user explicitly approved this choice in conversation "
+                        "(agents record decisions; they never make them)")
     with_by(s)
 
     s = at.add_parser("impact")
@@ -638,7 +646,8 @@ def _run_add_locked(root: Path, args: argparse.Namespace) -> None:
             if ev["chosen"] not in allowed:
                 raise SystemExit(f"[tasklog] --chosen must be an existing option id "
                                  f"{sorted(allowed)} (or 'none')")
-    check_gates(ev, load_wordlists(REPO_ROOT), getattr(args, "raw", False))
+    check_gates(ev, load_wordlists(REPO_ROOT), getattr(args, "raw", False),
+                getattr(args, "user_approved", False))
     append_event(root, ev)
     render_views(root)
     inner_git_commit(root, f"{ev['type']} {task_id}")
@@ -730,8 +739,9 @@ def should_nudge(entries_text: str, last_event_age_s: float | None) -> str | Non
     if not hits:
         return None
     words = "、".join(hits[:4])
-    return (f"检测到疑似未落账的裁决信号（{words}）。若本会话确有方案选择/裁决，"
-            f"请用 render_tasklog.py add 落账后结束；确无则直接结束（每会话至多提醒一次）。")
+    return (f"检测到疑似未落账的裁决信号（{words}）。用户已拍板 → add decision 记录"
+            f"（须 --user-approved 见证拍板）；仅模型自拟的结论不得定案——记 finding/note "
+            f"并保持 active；确无裁决则直接结束（每会话至多提醒一次）。")
 
 def transcript_signals(transcript_path: str) -> str:
     """Human/assistant text from a Claude Code session transcript -- the
