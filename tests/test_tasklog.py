@@ -76,7 +76,8 @@ def test_task_tree_attaches_options_to_causes():
         {"ts": "2026-10-19T10:00", "by": "human", "task": "T-1", "type": "task.new",
          "title": "t", "unit": "u"},
         {"ts": "2026-10-19T10:01", "by": "human", "task": "T-1", "type": "obs", "text": "问题"},
-        {"ts": "2026-10-19T10:02", "by": "human", "task": "T-1", "type": "finding", "text": "原因一"},
+        {"ts": "2026-10-19T10:02", "by": "human", "task": "T-1", "type": "finding", "text": "原因一",
+         "evidence": "fig.pdf"},
         {"ts": "2026-10-19T10:03", "by": "human", "task": "T-1", "type": "option",
          "option_id": "A", "text": "治因一", "ref": "2026-10-19T10:02"},
         {"ts": "2026-10-19T10:04", "by": "human", "task": "T-1", "type": "option",
@@ -88,6 +89,7 @@ def test_task_tree_attaches_options_to_causes():
     assert i_cause < i_opt                                   # ref'd option nests under its cause
     assert html.index('<ul class="tree">', i_cause) < i_opt  # inside a sublist after the cause
     assert "全局方案" in html                                # unref'd option stays at task root
+    assert 'class="evd"' in html and "fig.pdf" in html        # evidence surfaces in tree rows
 
 
 def test_options_grouped_under_single_problem():
@@ -280,10 +282,13 @@ def test_index_task_graph_edges_and_inbound_marker():
          "title": "调整父任务", "unit": "u", "parent": "T-1"},
         {"ts": "2026-10-02T11:00", "by": "h", "task": "T-2", "type": "link",
          "to": "T-1", "why": "口径调整"},
+        {"ts": "2026-10-02T12:00", "by": "h", "task": "T-2", "type": "decision",
+         "chosen": "B", "rationale": "数据源裁决走 GED"},
     ]
     tasks = mod.build_tasks(events)
     html = mod.index_page(tasks, [])
     assert "<svg" in html and 'class="e-fork"' in html          # parent -> fork edge
-    assert 'class="e-merge"' in html and "口径调整" in html      # link -> merge-back edge
+    assert 'class="e-merge"' in html                            # link -> merge-back edge
+    assert 'class="dg-dc"' in html and "GED" in html            # decision column on the row
     node = mod.task_node(tasks["T-1"], tasks)
     assert "↩1" in node                                          # inbound marker on the target task

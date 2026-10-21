@@ -228,6 +228,8 @@ details[open]>summary.row::before{content:"▾"}
 .ts{color:var(--muted);font:11.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap}
 .ts-meta{color:var(--muted);font-size:12px;white-space:nowrap}
 .tx{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.evd{justify-self:end;max-width:24ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+color:var(--muted);font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
 /* ---- task DAG graph (git-log style) ---- */
 .dag{width:100%;height:auto;display:block}
 .dag path{fill:none;stroke-width:2}
@@ -237,6 +239,8 @@ details[open]>summary.row::before{content:"▾"}
 .dag a{text-decoration:none}
 .dag a:hover text{fill:var(--blue);font-weight:600}
 .dg-dropped{fill:#9ca3af;text-decoration:line-through}
+.dg-dt{font:11px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#9ca3af}
+.dg-dc{fill:#6d28d9}.dg-dc-x{fill:#cbd5e1}
 .dg-bh{font-size:12px;font-weight:600;fill:#6b7280;letter-spacing:.05em}
 .dg-bh.meta{font-weight:400;font-size:11px}
 .dg-sep{stroke:#e5e7eb;stroke-width:1}
@@ -493,7 +497,9 @@ def _node(e: dict, inner: str = "", tasks: dict | None = None) -> str:
         text = esc(p[:100] + ("…" if len(p) > 100 else ""))
     row = (f'<span class="tag t-{role}">{tag}</span>'
            f'<span class="ts" title="{esc(e["ts"])}">{esc(short_ts)}</span>'
-           f'<span class="tx" title="{esc(p)}">{text}</span>')
+           f'<span class="tx" title="{esc(p)}">{text}</span>'
+           + (f'<span class="evd" title="{esc(e["evidence"])}">{esc(e["evidence"])}</span>'
+              if e.get("evidence") else ""))
     if inner:  # nodes with children are collapsible
         return f'<li class="n-{role}"><details open><summary class="row">{row}</summary>{inner}</details></li>'
     return f'<li class="n-{role}"><div class="row">{row}</div></li>'
@@ -609,7 +615,7 @@ def task_graph(tasks: dict, stages: list[tuple[str, str]]) -> str:
     tband: dict[str, str] = {}
     head: list[str] = []
     y = PAD
-    W = lx + 620
+    W = lx + 690
     for label, start, n in bands:
         if y > PAD:
             head.append(f'<line class="dg-sep" x1="0" x2="{W}" y1="{y - 12}" y2="{y - 12}"/>')
@@ -648,7 +654,15 @@ def task_graph(tasks: dict, stages: list[tuple[str, str]]) -> str:
     for t in order:
         cx, cy = PAD + lane_of[t["id"]] * LANE_W, ys[t["id"]]
         n = inb.get(t["id"], 0)
-        lab = esc(t["title"][:44] + ("…" if len(t["title"]) > 44 else "")) + (f" ↩{n}" if n else "")
+        title = t["title"][:20] + ("…" if len(t["title"]) > 20 else "") + (f" ↩{n}" if n else "")
+        cur = current_decision(t)
+        if cur:
+            rat = cur.get("rationale", "")
+            rat = rat[:20] + ("…" if len(rat) > 20 else "")
+            dec, dc_cls = esc(f"{cur.get('chosen', '')}—{rat}"), "dg-dc"
+        else:
+            dec, dc_cls = "—", "dg-dc-x"
+        dt = f"{t['ts0'][5:10].replace('-', '/')}~{t['ts1'][5:10].replace('-', '/')}"
         tip = esc(f"{t['id']} · {t['title']} · {STATUS_ZH.get(t['status'], t['status'])}")
         txt = esc(f"{t['title']} {t['id']} {t['unit']} " + " ".join(
             str(v) for e in t["events"] for v in e.values() if isinstance(v, str)))
@@ -656,7 +670,9 @@ def task_graph(tasks: dict, stages: list[tuple[str, str]]) -> str:
                      f'data-txt="{txt}" href="{esc(t["id"])}.html">'
                      f'<circle cx="{cx}" cy="{cy}" r="4.5" fill="{GRAPH_DOT.get(t["status"], "#6b7280")}">'
                      f"<title>{tip}</title></circle>"
-                     f'<text x="{lx}" y="{cy + 4}" class="dg-{t["status"]}">{lab}</text></a>')
+                     f'<text x="{lx}" y="{cy + 4}" class="dg-dt">{dt}</text>'
+                     f'<text x="{lx + 76}" y="{cy + 4}" class="dg-tt dg-{t["status"]}">{esc(title)}</text>'
+                     f'<text x="{lx + 326}" y="{cy + 4}" class="{dc_cls}">{dec}</text></a>')
     parts.append("</svg>")
     return f'<div class="graph-b">{"".join(parts)}</div>'
 
