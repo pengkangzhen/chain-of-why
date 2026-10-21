@@ -13,7 +13,7 @@
  Claude Code hooks：SessionStart → brief（注入未结任务 + RUNLOG 漂移）                     │
                     Stop        → nudge（裁决信号提醒落账，每会话至多一次）                ▼
                                                                     render ─▶ .whylog/view/*.html
-                                                                   （静态因果树，可折叠，禁手编）
+                                                                   （index 推理链 + 任务卡，禁手编）
                                                                     内嵌 git 仓 ─▶ add 即自动 commit 备份
 ```
 

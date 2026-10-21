@@ -288,7 +288,7 @@ def test_finding_kinds_render_closed_triad_badges():
     assert '">发现</span>' in html                  # legacy no-kind falls back to 发现
 
 
-def test_chain_page_roots_stage_question_and_chains_events():
+def test_index_roots_stage_question_and_chains_events():
     events = [
         {"ts": "2026-08-11T09:00", "by": "h", "task": "T-1", "type": "task.new",
          "title": "GPR 44国缺口", "unit": "1-risk/x"},
@@ -296,28 +296,22 @@ def test_chain_page_roots_stage_question_and_chains_events():
         {"ts": "2026-08-11T09:20", "by": "h", "task": "T-1", "type": "decision",
          "chosen": "B", "rationale": "走 GDELT 扩展"},
     ]
-    html = mod.chain_page(mod.build_tasks(events),
+    html = mod.index_page(mod.build_tasks(events),
                           [("1-risk", "风险量化", "如何量化地缘政治风险？")])
     assert "如何量化地缘政治风险？" in html                    # founding question roots the chain
     assert 'tag t-obs">问题' in html and 'tag t-decision">裁决' in html
     assert "走 GDELT 扩展" in html and 'href="T-1.html"' in html
 
 
-def test_index_task_graph_edges_and_inbound_marker():
+def test_index_chain_shows_link_nodes_and_inbound_markers():
     events = [
         {"ts": "2026-10-01T10:00", "by": "h", "task": "T-1", "type": "task.new",
          "title": "父任务", "unit": "u"},
         {"ts": "2026-10-02T10:00", "by": "h", "task": "T-2", "type": "task.new",
-         "title": "调整父任务", "unit": "u", "parent": "T-1"},
+         "title": "调整父任务", "unit": "u"},
         {"ts": "2026-10-02T11:00", "by": "h", "task": "T-2", "type": "link",
          "to": "T-1", "why": "口径调整"},
-        {"ts": "2026-10-02T12:00", "by": "h", "task": "T-2", "type": "decision",
-         "chosen": "B", "rationale": "数据源裁决走 GED"},
     ]
-    tasks = mod.build_tasks(events)
-    html = mod.index_page(tasks, [])
-    assert "<svg" in html and 'class="e-fork"' in html          # parent -> fork edge
-    assert 'class="e-merge"' in html                            # link -> merge-back edge
-    assert 'class="dg-dc"' in html and "GED" in html            # decision column on the row
-    node = mod.task_node(tasks["T-1"], tasks)
-    assert "↩1" in node                                          # inbound marker on the target task
+    html = mod.index_page(mod.build_tasks(events), [])
+    assert 't-link">衔接' in html and "口径调整" in html        # link events surface as chain nodes
+    assert "↩1" in html                                         # inbound marker on the divider

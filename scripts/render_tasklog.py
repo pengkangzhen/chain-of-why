@@ -238,23 +238,11 @@ color:var(--muted);font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
 /* ---- reasoning chain view ---- */
 .ch-q{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);
 border-left:4px solid #1f2937;border-radius:10px;padding:10px 14px;margin:2px 0 8px;font-weight:600}
-.ch-task{margin:10px 0 2px;padding-top:8px;border-top:1px dashed #cbd5e1;list-style:none}
-.ch-task a{font-weight:600}
-/* ---- task DAG graph (git-log style) ---- */
-.dag{width:100%;height:auto;display:block}
-.dag path{fill:none;stroke-width:2}
-.e-fork{stroke:#94a3b8}
-.e-merge{stroke:#0f766e;stroke-dasharray:5 4}
-.dag text{font-size:12px;fill:#1f2937}
-.dag a{text-decoration:none}
-.dag a:hover text{fill:var(--blue);font-weight:600}
-.dg-dropped{fill:#9ca3af;text-decoration:line-through}
-.dg-dt{font:11px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#9ca3af}
-.dg-dc{fill:#6d28d9}.dg-dc-x{fill:#cbd5e1}
-.dg-bh{font-size:12px;font-weight:600;fill:#6b7280;letter-spacing:.05em}
-.dg-bh.meta{font-weight:400;font-size:11px}
-.dg-sep{stroke:#e5e7eb;stroke-width:1}
-.graph-b{overflow-x:auto;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 8px}
+.ch-task{display:flex;gap:10px;align-items:baseline;margin:10px 0 2px;padding-top:8px;
+border-top:1px dashed #cbd5e1;list-style:none}
+.ch-task a{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ch-task .chip{margin-left:auto;flex:none}
+li.no-hit{display:none} .ch-sec.no-hit{display:none}
 /* ---- task card page ---- */
 .card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px}
 blockquote{margin:0 0 10px;padding:8px 14px;border-left:3px solid #93c5fd;background:#f8fafc;border-radius:0 8px 8px 0}
@@ -276,45 +264,42 @@ font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 footer{margin-top:30px;color:var(--muted);font-size:12px;text-align:center}
 """
 
-def bar_html(labels: list[str]) -> str:
-    chips = ['<button class="fch on" data-f="all">全部</button>',
-             '<button class="fch" data-f="open">未结</button>']
-    chips += [f'<button class="fch" data-f="b:{esc(l)}">{esc(l)}</button>' for l in labels]
-    return ('<div class="bar"><input id="q" type="search" placeholder="筛选：文本 / 阶段 / 状态…">'
-            '<span class="fchips" id="fchips">' + "".join(chips) +
-            '</span><span class="meta" id="cnt"></span></div>')
+def bar_html() -> str:
+    items = [("all", "全部"), ("open", "未结"), ("t-obs", "问题"), ("k-survey", "调研"),
+             ("k-cause", "原因"), ("k-trial", "实证"), ("t-option", "方案"),
+             ("t-decision", "裁决"), ("t-link", "衔接")]
+    chips = "".join(f'<button class="fch{" on" if k == "all" else ""}" data-f="{k}">{v}</button>'
+                    for k, v in items)
+    return ('<div class="bar"><input id="q" type="search" placeholder="筛选：文本 / 环节 / 状态…">'
+            f'<span class="fchips" id="fchips">{chips}</span>'
+            '<span class="meta" id="cnt"></span></div>')
 
 
 SCRIPT = """
 <script>
-const q=document.getElementById('q');let st='all',openOnly=false;
-const rows=[...document.querySelectorAll('.dg-r')];
-const edges=[...document.querySelectorAll('.dag path[data-f]')];
-const bands=[...document.querySelectorAll('.dg-band')];
-function apply(){const s=q.value.trim().toLowerCase();let vis=0;const V={};
- rows.forEach(a=>{
-  let ok=(st==='all'||a.dataset.band===st);
-  if(openOnly&&!['active','decided'].includes(a.dataset.st))ok=false;
-  if(s&&!(a.dataset.txt||a.textContent).toLowerCase().includes(s))ok=false;
-  V[a.getAttribute('href').replace('.html','')]=ok;
-  a.setAttribute('display',ok?'':'none');
-  if(ok)vis++;});
- edges.forEach(p=>p.setAttribute('display',V[p.dataset.f]&&V[p.dataset.t]?'':'none'));
- bands.forEach(b=>{
-  const any=rows.some(a=>a.dataset.band===b.dataset.band
-   &&V[a.getAttribute('href').replace('.html','')]);
-  b.setAttribute('display',any?'':'none');});
- document.getElementById('cnt').textContent=vis+' / '+rows.length+' 任务';}
-document.querySelectorAll('.fch').forEach(b=>b.addEventListener('click',()=>{
- const f=b.dataset.f;
- if(f==='all'){st='all';openOnly=false;q.value='';}
- else if(f==='open'){openOnly=!openOnly;}
- else{st=(st===f?'all':f);}
- document.querySelectorAll('.fch').forEach(x=>{
-  const fx=x.dataset.f;
-  x.classList.toggle('on',fx==='all'?st==='all':fx==='open'?openOnly:st===fx);});
- apply();}));
+const q=document.getElementById('q');let mode='all';
+function match(li){
+ const s=q.value.trim().toLowerCase();
+ if(s&&!li.textContent.toLowerCase().includes(s))return false;
+ if(mode==='open')return !!li.querySelector(':scope .chip.c-active, :scope .chip.c-decided');
+ if(mode!=='all'){
+  const t=li.querySelector(':scope>.row .tag, :scope>details>summary.row .tag');
+  if(!t||!t.className.includes(mode))return false;}
+ return true;}
+function mark(li){let hit=match(li);
+ li.querySelectorAll(':scope>details>ul>li, :scope>ul>li').forEach(c=>{if(mark(c))hit=true;});
+ li.classList.toggle('no-hit',!hit);return hit;}
+function apply(){
+ document.querySelectorAll('.ch-sec>.tree>li').forEach(mark);
+ document.querySelectorAll('.ch-sec').forEach(sec=>{
+  sec.classList.toggle('no-hit',!sec.querySelector('li:not(.no-hit)'))});
+ const vis=document.querySelectorAll('.ch-sec li:not(.no-hit)').length;
+ const tot=document.querySelectorAll('.ch-sec li').length;
+ document.getElementById('cnt').textContent=vis+' / '+tot+' 节点';}
 q.addEventListener('input',apply);
+document.querySelectorAll('.fch').forEach(b=>b.addEventListener('click',()=>{
+ document.querySelectorAll('.fch').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+ mode=b.dataset.f;apply();}));
 apply();
 </script>"""
 
@@ -583,144 +568,41 @@ def task_node(t: dict, tasks: dict) -> str:
     body = f'<ul class="tree">{"".join(kids)}</ul>' if kids else ""
     return f"<li><details>{summary}{body}</details></li>"
 
-GRAPH_DOT = {"active": "#1d4ed8", "decided": "#6d28d9", "promoted": "#15803d", "dropped": "#9ca3af"}
+def index_page(tasks: dict, stages: list, goal: str = "") -> str:
+    """Single surface: per stage the founding question roots a vertical chain of every
+    task's events in narrative order; task dividers carry status + inbound marks.
+    Cards T-*.html keep the per-task deep dive; the filter bar drives visibility."""
+    counts = {s: sum(1 for t in tasks.values() if t["status"] == s) for s in STATUSES}
+    chips = " ".join(f'<span class="chip c-{s}">{STATUS_ZH[s]} {counts[s]}</span>' for s in STATUSES)
+    header = "<h1>推理链</h1>"
+    if goal:
+        header += f'<div class="goal">{esc(goal)}</div>'
+    header += f"<div>{chips}</div>"
 
-def _dag_edge(parts: list[str], x1: float, y1: float, x2: float, y2: float,
-              cls: str, extra: str, tip: str, src: str, dst: str) -> None:
-    d = (f"M{x1} {y1}L{x2} {y2}" if x1 == x2 else
-         f"M{x1} {y1}C{x1} {(y1 + y2) / 2},{x2} {(y1 + y2) / 2},{x2} {y2}")
-    parts.append(f'<path class="{cls}" data-f="{src}" data-t="{dst}" d="{d}"{extra}>'
-                 f"<title>{esc(tip)}</title></path>")
-
-
-def task_graph(tasks: dict, stages: list[tuple[str, str]]) -> str:
-    """The single task surface, git-log style: stage bands group the rows, time flows
-    down inside a band, lanes carry edges. parent = solid fork, link = dashed
-    merge-back (hover = why). Rows carry data-* attrs for the filter bar."""
     secs = stage_sections(tasks, stages)
-    if not secs:
-        return ""
-    PAD, LANE_W, ROW, HDR = 16, 22, 28, 34
-    order: list[dict] = []
-    bands: list[tuple[str, int, int]] = []          # (label, first row index, count)
-    for label, group in secs:
-        g = sorted(group, key=lambda x: x["ts1"])
-        bands.append((label, len(order), len(g)))
-        order.extend(g)
-    rows = {t["id"]: i for i, t in enumerate(order)}
-    lane_of: dict[str, int] = {}
-    last_row: list[int] = []
-    for t in order:
-        p = t.get("parent")
-        lane = None
-        if p in lane_of and last_row[lane_of[p]] < rows[t["id"]]:
-            lane = lane_of[p]                       # child continues on the parent's lane
-        else:
-            lane = next((i for i, r in enumerate(last_row) if r < rows[t["id"]]), None)
-        if lane is None:
-            last_row.append(-1)
-            lane = len(last_row) - 1
-        lane_of[t["id"]] = lane
-        last_row[lane] = rows[t["id"]]
-    lx = PAD + len(last_row) * LANE_W + 6           # label column starts right of all lanes
-
-    ys: dict[str, int] = {}
-    tband: dict[str, str] = {}
-    head: list[str] = []
-    y = PAD
-    W = lx + 690
-    for label, start, n in bands:
-        if y > PAD:
-            head.append(f'<line class="dg-sep" x1="0" x2="{W}" y1="{y - 12}" y2="{y - 12}"/>')
-        head.append(f'<g class="dg-band" data-band="{esc(label)}">'
-                    f'<text class="dg-bh" x="2" y="{y + 14}">{esc(label)}</text>'
-                    f'<text class="dg-bh meta" x="{lx + 6}" y="{y + 14}">{n} 任务</text></g>')
-        y += HDR
-        for t in order[start:start + n]:
-            ys[t["id"]] = y
-            tband[t["id"]] = label
-            y += ROW
-    H = y + PAD
-
+    qmap = {row[1]: (row[2] if len(row) > 2 else "") for row in stages} if stages else {}
     inb: dict[str, int] = {}
-    for t in order:
-        for e in t["events"]:
+    for x in tasks.values():
+        for e in x["events"]:
             if e["type"] == "link" and e.get("to") in tasks:
                 inb[e["to"]] = inb.get(e["to"], 0) + 1
 
-    parts = [f'<svg class="dag" viewBox="0 0 {W} {H}" role="img">',
-             '<defs><marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" '
-             'markerHeight="7" orient="auto-start-reverse">'
-             '<path d="M0 0L8 4L0 8z" fill="#0f766e"/></marker></defs>', *head]
-    for t in order:
-        p = t.get("parent")
-        if p in rows and p != t["id"]:
-            _dag_edge(parts, PAD + lane_of[p] * LANE_W, ys[p], PAD + lane_of[t["id"]] * LANE_W,
-                      ys[t["id"]], "e-fork", "", f"{p} 分叉出 {t['id']}", p, t["id"])
-    for t in order:
-        for e in t["events"]:
-            if e["type"] == "link" and e.get("to") in rows and e["to"] != t["id"]:
-                _dag_edge(parts, PAD + lane_of[t["id"]] * LANE_W, ys[t["id"]],
-                          PAD + lane_of[e["to"]] * LANE_W, ys[e["to"]], "e-merge",
-                          ' marker-end="url(#arr)"',
-                          f"{t['id']} 衔接 {e['to']}：{e.get('why', '')}", t["id"], e["to"])
-    for t in order:
-        cx, cy = PAD + lane_of[t["id"]] * LANE_W, ys[t["id"]]
-        n = inb.get(t["id"], 0)
-        title = t["title"][:20] + ("…" if len(t["title"]) > 20 else "") + (f" ↩{n}" if n else "")
-        cur = current_decision(t)
-        if cur:
-            rat = cur.get("rationale", "")
-            rat = rat[:20] + ("…" if len(rat) > 20 else "")
-            dec, dc_cls = esc(f"{cur.get('chosen', '')}—{rat}"), "dg-dc"
-        else:
-            dec, dc_cls = "—", "dg-dc-x"
-        dt = f"{t['ts0'][5:10].replace('-', '/')}~{t['ts1'][5:10].replace('-', '/')}"
-        tip = esc(f"{t['id']} · {t['title']} · {STATUS_ZH.get(t['status'], t['status'])}")
-        txt = esc(f"{t['title']} {t['id']} {t['unit']} " + " ".join(
-            str(v) for e in t["events"] for v in e.values() if isinstance(v, str)))
-        parts.append(f'<a class="dg-r" data-st="{t["status"]}" data-band="{esc(tband[t["id"]])}" '
-                     f'data-txt="{txt}" href="{esc(t["id"])}.html">'
-                     f'<circle cx="{cx}" cy="{cy}" r="4.5" fill="{GRAPH_DOT.get(t["status"], "#6b7280")}">'
-                     f"<title>{tip}</title></circle>"
-                     f'<text x="{lx}" y="{cy + 4}" class="dg-dt">{dt}</text>'
-                     f'<text x="{lx + 76}" y="{cy + 4}" class="dg-tt dg-{t["status"]}">{esc(title)}</text>'
-                     f'<text x="{lx + 326}" y="{cy + 4}" class="{dc_cls}">{dec}</text></a>')
-    parts.append("</svg>")
-    return f'<div class="graph-b">{"".join(parts)}</div>'
-
-
-def chain_page(tasks: dict, stages: list) -> str:
-    """Per-stage reasoning chain: the founding question (config stages[2]) roots a
-    vertical chain of every task's events in narrative order -- the arc
-    问题→发现→裁决→(新任务)新问题… that a git-style DAG cannot show."""
-    secs = stage_sections(tasks, stages)
-    qmap = {row[1]: (row[2] if len(row) > 2 else "") for row in stages} if stages else {}
-    header = ('<h1>推理链</h1><div class="goal">按阶段串联的问题→发现→方案→裁决叙事弧 · '
-              '<a href="index.html">← 任务关系图</a></div>')
-    body = []
+    body = [bar_html()]
     for label, group in secs:
         q = qmap.get(label, "")
         root = (f'<div class="ch-q"><span class="tag t-task">阶段问题</span> {esc(q)}</div>'
                 if q else "")
         rows = []
         for t in sorted(group, key=lambda x: x["ts1"]):
+            n = inb.get(t["id"], 0)
             rows.append(f'<li class="ch-task"><a href="{esc(t["id"])}.html">'
-                        f'{esc(t["id"])} · {esc(t["title"])}</a></li>')
+                        f'{esc(t["id"])} · {esc(t["title"])}</a>'
+                        + (f'<span class="ts-meta"> ↩{n}</span>' if n else "")
+                        + f'<span class="chip c-{t["status"]}">'
+                          f'{STATUS_ZH.get(t["status"], t["status"])}</span></li>')
             rows.extend(_node(e, tasks=tasks) for e in t["events"] if e["type"] != "task.new")
-        body.append(f'<h2>{esc(label)}</h2>{root}<ul class="tree">{"".join(rows)}</ul>')
-    return _page("chain", header, "".join(body))
-
-
-def index_page(tasks: dict, stages: list[tuple[str, str]], goal: str = "") -> str:
-    counts = {s: sum(1 for t in tasks.values() if t["status"] == s) for s in STATUSES}
-    chips = " ".join(f'<span class="chip c-{s}">{STATUS_ZH[s]} {counts[s]}</span>' for s in STATUSES)
-    header = "<h1>任务总览</h1>"
-    if goal:
-        header += f'<div class="goal">{esc(goal)}</div>'
-    header += f'<div>{chips} <a class="meta" href="chain.html">推理链 →</a></div>'
-
-    body = [bar_html([label for label, _ in stage_sections(tasks, stages)]), task_graph(tasks, stages)]
+        body.append(f'<section class="ch-sec"><h2>{esc(label)}</h2>{root}'
+                    f'<ul class="tree">{"".join(rows)}</ul></section>')
     return _page("index", header, "".join(body) + SCRIPT)
 
 def render_views(root: Path) -> list[Path]:
@@ -735,9 +617,6 @@ def render_views(root: Path) -> list[Path]:
         written.append(fp)
     fp = view / "index.html"
     fp.write_text(index_page(tasks, load_stages(REPO_ROOT), load_goal(REPO_ROOT)), encoding="utf-8")
-    written.append(fp)
-    fp = view / "chain.html"
-    fp.write_text(chain_page(tasks, load_stages(REPO_ROOT)), encoding="utf-8")
     written.append(fp)
     return written
 
