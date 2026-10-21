@@ -274,6 +274,21 @@ def test_decision_gate_requires_user_attestation():
     mod.check_gates(dec, wl, raw=True)                       # --raw explicit override
 
 
+def test_chain_page_roots_stage_question_and_chains_events():
+    events = [
+        {"ts": "2026-08-11T09:00", "by": "h", "task": "T-1", "type": "task.new",
+         "title": "GPR 44国缺口", "unit": "1-risk/x"},
+        {"ts": "2026-08-11T09:10", "by": "h", "task": "T-1", "type": "obs", "text": "GPR 只覆盖 44 国"},
+        {"ts": "2026-08-11T09:20", "by": "h", "task": "T-1", "type": "decision",
+         "chosen": "B", "rationale": "走 GDELT 扩展"},
+    ]
+    html = mod.chain_page(mod.build_tasks(events),
+                          [("1-risk", "风险量化", "如何量化地缘政治风险？")])
+    assert "如何量化地缘政治风险？" in html                    # founding question roots the chain
+    assert 'tag t-obs">问题' in html and 'tag t-decision">裁决' in html
+    assert "走 GDELT 扩展" in html and 'href="T-1.html"' in html
+
+
 def test_index_task_graph_edges_and_inbound_marker():
     events = [
         {"ts": "2026-10-01T10:00", "by": "h", "task": "T-1", "type": "task.new",

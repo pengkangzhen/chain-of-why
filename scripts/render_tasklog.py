@@ -230,6 +230,11 @@ details[open]>summary.row::before{content:"▾"}
 .tx{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .evd{justify-self:end;max-width:24ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 color:var(--muted);font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+/* ---- reasoning chain view ---- */
+.ch-q{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);
+border-left:4px solid #1f2937;border-radius:10px;padding:10px 14px;margin:2px 0 8px;font-weight:600}
+.ch-task{margin:10px 0 2px;padding-top:8px;border-top:1px dashed #cbd5e1;list-style:none}
+.ch-task a{font-weight:600}
 /* ---- task DAG graph (git-log style) ---- */
 .dag{width:100%;height:auto;display:block}
 .dag path{fill:none;stroke-width:2}
@@ -399,7 +404,8 @@ def load_stages(repo_root: Path) -> list[tuple[str, str]]:
         return []
     try:
         data = json.loads(fp.read_text(encoding="utf-8"))
-        return [(str(k), str(v)) for k, v in data.get("stages", [])]
+        return [(str(r[0]), str(r[1]), str(r[2]) if len(r) > 2 else "")
+                for r in data.get("stages", [])]
     except (json.JSONDecodeError, OSError):
         return []
 
@@ -464,7 +470,7 @@ def stage_sections(tasks: dict, stages: list[tuple[str, str]]) -> list[tuple[str
             unit = unit[len("docs/"):]
         buckets.setdefault(unit.split("/", 1)[0], []).append(t)
     if stages:
-        sections = [(label, buckets.pop(key)) for key, label in stages if key in buckets]
+        sections = [(label, buckets.pop(key)) for key, label, *_ in stages if key in buckets]
         misc = [t for group in buckets.values() for t in group]
         if misc:
             sections.append(("其他", misc))
@@ -677,13 +683,35 @@ def task_graph(tasks: dict, stages: list[tuple[str, str]]) -> str:
     return f'<div class="graph-b">{"".join(parts)}</div>'
 
 
+def chain_page(tasks: dict, stages: list) -> str:
+    """Per-stage reasoning chain: the founding question (config stages[2]) roots a
+    vertical chain of every task's events in narrative order -- the arc
+    问题→发现→裁决→(新任务)新问题… that a git-style DAG cannot show."""
+    secs = stage_sections(tasks, stages)
+    qmap = {row[1]: (row[2] if len(row) > 2 else "") for row in stages} if stages else {}
+    header = ('<h1>推理链</h1><div class="goal">按阶段串联的问题→发现→方案→裁决叙事弧 · '
+              '<a href="index.html">← 任务关系图</a></div>')
+    body = []
+    for label, group in secs:
+        q = qmap.get(label, "")
+        root = (f'<div class="ch-q"><span class="tag t-task">阶段问题</span> {esc(q)}</div>'
+                if q else "")
+        rows = []
+        for t in sorted(group, key=lambda x: x["ts1"]):
+            rows.append(f'<li class="ch-task"><a href="{esc(t["id"])}.html">'
+                        f'{esc(t["id"])} · {esc(t["title"])}</a></li>')
+            rows.extend(_node(e, tasks=tasks) for e in t["events"] if e["type"] != "task.new")
+        body.append(f'<h2>{esc(label)}</h2>{root}<ul class="tree">{"".join(rows)}</ul>')
+    return _page("chain", header, "".join(body))
+
+
 def index_page(tasks: dict, stages: list[tuple[str, str]], goal: str = "") -> str:
     counts = {s: sum(1 for t in tasks.values() if t["status"] == s) for s in STATUSES}
     chips = " ".join(f'<span class="chip c-{s}">{STATUS_ZH[s]} {counts[s]}</span>' for s in STATUSES)
     header = "<h1>任务总览</h1>"
     if goal:
         header += f'<div class="goal">{esc(goal)}</div>'
-    header += f"<div>{chips}</div>"
+    header += f'<div>{chips} <a class="meta" href="chain.html">推理链 →</a></div>'
 
     body = [bar_html([label for label, _ in stage_sections(tasks, stages)]), task_graph(tasks, stages)]
     return _page("index", header, "".join(body) + SCRIPT)
@@ -700,6 +728,9 @@ def render_views(root: Path) -> list[Path]:
         written.append(fp)
     fp = view / "index.html"
     fp.write_text(index_page(tasks, load_stages(REPO_ROOT), load_goal(REPO_ROOT)), encoding="utf-8")
+    written.append(fp)
+    fp = view / "chain.html"
+    fp.write_text(chain_page(tasks, load_stages(REPO_ROOT)), encoding="utf-8")
     written.append(fp)
     return written
 
