@@ -237,6 +237,16 @@ details[open]>summary.row::before{content:"▾"}
 .ts{color:var(--muted);font:11.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap}
 .ts-meta{color:var(--muted);font-size:12px;white-space:nowrap}
 .tx{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* ---- task DAG graph (git-log style) ---- */
+.dag{width:100%;height:auto;display:block}
+.dag path{fill:none;stroke-width:2}
+.e-fork{stroke:#94a3b8}
+.e-merge{stroke:#0f766e;stroke-dasharray:5 4}
+.dag text{font-size:12px;fill:#1f2937}
+.dag a{text-decoration:none}
+.dag a:hover text{fill:var(--blue);font-weight:600}
+.dg-dropped{fill:#9ca3af;text-decoration:line-through}
+.graph-b{overflow-x:auto}
 /* ---- task card page ---- */
 .card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px}
 blockquote{margin:0 0 10px;padding:8px 14px;border-left:3px solid #93c5fd;background:#f8fafc;border-radius:0 8px 8px 0}
@@ -284,6 +294,7 @@ function mark(li){let hit=match(li);
 function apply(){const lis=[...document.querySelectorAll('.tp-b li')];
  document.querySelectorAll('.tp-b>.tree>li').forEach(mark);
  document.querySelectorAll('details.tp').forEach(tp=>{
+  if(!tp.querySelector('.tp-b li'))return;
   tp.classList.toggle('no-hit',!tp.querySelector('.tp-b li:not(.no-hit)'));});
  const vis=lis.filter(li=>!li.classList.contains('no-hit')).length;
  document.getElementById('cnt').textContent=vis+' / '+lis.length+' 节点';}
@@ -377,12 +388,17 @@ def task_page(task: dict, tasks: dict) -> str:
             for e in imps))
 
     links = [e for e in task["events"] if e["type"] == "link"]
-    if links:
+    inb = [(x["id"], e.get("why", "")) for x in tasks.values() for e in x["events"]
+           if e["type"] == "link" and e.get("to") == tid]
+    if links or inb:
         rows = []
         for e in links:
             a = (f'<a href="{esc(e["to"])}.html">{esc(e["to"])}</a>'
                  if e["to"] in tasks else esc(e["to"]))
             rows.append(f'<div class="ev"><span class="meta">{esc(e["ts"])}</span> → {a} · {esc(e["why"])}</div>')
+        for src, why in inb:
+            rows.append(f'<div class="ev"><span class="meta">↩</span> '
+                        f'<a href="{esc(src)}.html">{esc(src)}</a> · {esc(why)}</div>')
         parts.append("<h2>衔接</h2>" + "".join(rows))
 
     notes = [e for e in task["events"] if e["type"] == "note"]
@@ -492,12 +508,15 @@ def event_preview(e: dict) -> str:
         return f'→ {e.get("to", "")} · {e.get("why", "")}'
     return str(e.get("text") or e.get("title") or e.get("why") or "")
 
-def _node(e: dict, inner: str = "") -> str:
+def _node(e: dict, inner: str = "", tasks: dict | None = None) -> str:
     p = event_preview(e)
     tag = ROLE_ZH.get(e["type"], e["type"])
     role = e["type"].split(".")[0]
     short_ts = e["ts"][5:].replace("T", " ")      # 10-19 09:34 (full ts in title attr)
-    text = esc(p[:100] + ("…" if len(p) > 100 else ""))
+    if e["type"] == "link" and tasks and e.get("to") in tasks:
+        text = f'<a href="{esc(e["to"])}.html">→ {esc(e["to"])}</a> · {esc(e.get("why", ""))}'
+    else:
+        text = esc(p[:100] + ("…" if len(p) > 100 else ""))
     row = (f'<span class="tag t-{role}">{tag}</span>'
            f'<span class="ts" title="{esc(e["ts"])}">{esc(short_ts)}</span>'
            f'<span class="tx" title="{esc(p)}">{text}</span>')
@@ -536,7 +555,7 @@ def causal_children(t: dict, tasks: dict) -> list[str]:
     last_status = next((e for e in reversed(t["events"]) if e["type"] == "status"), None)
     if last_status:
         tail.append(_node(last_status))
-    tail += [_node(e) for e in t["events"] if e["type"] == "link"]
+    tail += [_node(e, tasks=tasks) for e in t["events"] if e["type"] == "link"]
     tail += [_node(e) for e in t["events"] if e["type"] == "note"]
     tail += [task_node(sub, tasks) for sub in tasks.values() if sub.get("parent") == t["id"]]
     single = len(problems) == 1
@@ -560,13 +579,81 @@ def causal_children(t: dict, tasks: dict) -> list[str]:
     return children
 
 def task_node(t: dict, tasks: dict) -> str:
+    inb = sum(1 for x in tasks.values() for e in x["events"]
+              if e["type"] == "link" and e.get("to") == t["id"])
+    inb_html = f'<span class="ts-meta" title="被其他任务衔接">↩{inb}</span>' if inb else ""
     summary = (f'<summary class="row trow"><span class="tag t-task">任务</span>'
                f'<a class="tx" href="{esc(t["id"])}.html">{esc(t["title"])}</a>'
-               f'<span class="ts-meta">{esc(t["id"])} · {esc(t["unit"])}</span>'
+               f'<span class="ts-meta">{esc(t["id"])} · {esc(t["unit"])}</span>{inb_html}'
                f'<span class="chip c-{t["status"]}">{STATUS_ZH.get(t["status"], t["status"])}</span></summary>')
     kids = causal_children(t, tasks)
     body = f'<ul class="tree">{"".join(kids)}</ul>' if kids else ""
     return f"<li><details>{summary}{body}</details></li>"
+
+GRAPH_DOT = {"active": "#1d4ed8", "decided": "#6d28d9", "promoted": "#15803d", "dropped": "#9ca3af"}
+
+def task_graph(tasks: dict) -> str:
+    """Task-level DAG, git-log style: time flows down, one row per task, lanes carry
+    edges. parent = solid fork curve; link = dashed merge-back with arrow (hover = why).
+    Same-task revisits stay one line -- the thread model, no second node needed."""
+    order = sorted(tasks.values(), key=lambda t: (t["ts0"], t["id"]))
+    if not order:
+        return ""
+    PAD, LANE_W, ROW = 16, 22, 28
+    rows = {t["id"]: i for i, t in enumerate(order)}
+    lane_of: dict[str, int] = {}
+    last_row: list[int] = []
+    for t in order:
+        p = t.get("parent")
+        lane = None
+        if p in lane_of and last_row[lane_of[p]] < rows[t["id"]]:
+            lane = lane_of[p]                       # child continues on the parent's lane
+        else:
+            lane = next((i for i, r in enumerate(last_row) if r < rows[t["id"]]), None)
+        if lane is None:
+            last_row.append(-1)
+            lane = len(last_row) - 1
+        lane_of[t["id"]] = lane
+        last_row[lane] = rows[t["id"]]
+    lx = PAD + len(last_row) * LANE_W + 6           # label column starts right of all lanes
+    y = lambda tid: PAD + rows[tid] * ROW + 14
+
+    edges = []                                       # (rows_from, rows_to, x1, x2, cls, tip)
+    for t in order:
+        p = t.get("parent")
+        if p in rows and p != t["id"]:
+            edges.append((rows[p], rows[t["id"]], PAD + lane_of[p] * LANE_W,
+                          PAD + lane_of[t["id"]] * LANE_W, "e-fork", f"{p} 分叉出 {t['id']}"))
+    for t in order:
+        for e in t["events"]:
+            if e["type"] == "link" and e.get("to") in rows and e["to"] != t["id"]:
+                edges.append((rows[t["id"]], rows[e["to"]], PAD + lane_of[t["id"]] * LANE_W,
+                              PAD + lane_of[e["to"]] * LANE_W, "e-merge",
+                              f"{t['id']} 衔接 {e['to']}：{e.get('why', '')}"))
+
+    parts = [f'<svg class="dag" viewBox="0 0 {lx + 620} {PAD * 2 + len(order) * ROW}" role="img">',
+             '<defs><marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" '
+             'markerHeight="7" orient="auto-start-reverse">'
+             '<path d="M0 0L8 4L0 8z" fill="#0f766e"/></marker></defs>']
+    for r1, r2, x1, x2, cls, tip in edges:
+        y1, y2 = PAD + r1 * ROW + 14, PAD + r2 * ROW + 14
+        d = (f"M{x1} {y1}L{x2} {y2}" if x1 == x2 else
+             f"M{x1} {y1}C{x1} {(y1 + y2) / 2},{x2} {(y1 + y2) / 2},{x2} {y2}")
+        m = ' marker-end="url(#arr)"' if cls == "e-merge" else ""
+        parts.append(f'<path class="{cls}" d="{d}"{m}><title>{esc(tip)}</title></path>')
+    for t in order:
+        cx, cy = PAD + lane_of[t["id"]] * LANE_W, y(t["id"])
+        tip = esc(f"{t['id']} · {t['title']} · {STATUS_ZH.get(t['status'], t['status'])}")
+        lab = esc(t["title"][:44] + ("…" if len(t["title"]) > 44 else ""))
+        parts.append(f'<a href="{esc(t["id"])}.html">'
+                     f'<circle cx="{cx}" cy="{cy}" r="4.5" fill="{GRAPH_DOT.get(t["status"], "#6b7280")}">'
+                     f"<title>{tip}</title></circle>"
+                     f'<text x="{lx}" y="{cy + 4}" class="dg-{t["status"]}">{lab}</text></a>')
+    parts.append("</svg>")
+    return (f'<details class="tp" open><summary class="tp-h">任务关系图 '
+             f'<span class="meta">{len(order)} 任务 · 实线=分叉 虚线=衔接</span></summary>'
+             f'<div class="tp-b graph-b">{"".join(parts)}</div></details>')
+
 
 def index_page(tasks: dict, stages: list[tuple[str, str]], goal: str = "") -> str:
     counts = {s: sum(1 for t in tasks.values() if t["status"] == s) for s in STATUSES}
@@ -576,7 +663,7 @@ def index_page(tasks: dict, stages: list[tuple[str, str]], goal: str = "") -> st
         header += f'<div class="goal">{esc(goal)}</div>'
     header += f"<div>{chips}</div>"
 
-    body = [BAR]
+    body = [BAR, task_graph(tasks)]
     for label, group in stage_sections(tasks, stages):
         roots = [t for t in sorted(group, key=lambda x: x["ts1"]) if t.get("parent") not in tasks]
         lis = "".join(task_node(t, tasks) for t in roots)

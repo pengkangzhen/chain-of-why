@@ -270,3 +270,20 @@ def test_decision_gate_requires_user_attestation():
     mod.check_gates(dec, wl, raw=False, user_approved=True)  # attested record passes
     mod.check_gates({**dec, "by": "human"}, wl, raw=False)   # human decides, no attestation
     mod.check_gates(dec, wl, raw=True)                       # --raw explicit override
+
+
+def test_index_task_graph_edges_and_inbound_marker():
+    events = [
+        {"ts": "2026-10-01T10:00", "by": "h", "task": "T-1", "type": "task.new",
+         "title": "父任务", "unit": "u"},
+        {"ts": "2026-10-02T10:00", "by": "h", "task": "T-2", "type": "task.new",
+         "title": "调整父任务", "unit": "u", "parent": "T-1"},
+        {"ts": "2026-10-02T11:00", "by": "h", "task": "T-2", "type": "link",
+         "to": "T-1", "why": "口径调整"},
+    ]
+    tasks = mod.build_tasks(events)
+    html = mod.index_page(tasks, [])
+    assert "<svg" in html and 'class="e-fork"' in html          # parent -> fork edge
+    assert 'class="e-merge"' in html and "口径调整" in html      # link -> merge-back edge
+    node = mod.task_node(tasks["T-1"], tasks)
+    assert "↩1" in node                                          # inbound marker on the target task
