@@ -65,6 +65,7 @@ def test_brief_lists_open_tasks_only(tmp_path, capsys):
     mod.run_brief(root)
     out = capsys.readouterr().out
     assert "T-20261019-1" in out and "未结" in out
+    assert "未结（T-20261019-1）" in out                    # title first, id in parens (human-facing)
     assert "T-20261019-2" not in out
     mod.run_brief(tmp_path / "empty")  # no store at all -> silent
     assert capsys.readouterr().out == ""

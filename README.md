@@ -75,6 +75,7 @@ python3 scripts/render_tasklog.py doctor   # store/views/hooks/config/lock 健�
 4. **白话优先**：先说人话，专名放句尾括号——总览页是叙事视图不是术语表
 5. **宁缺勿滥**：纯排版/微调不入账；「这行改动一年后还值得被知道吗」是入账判据
 6. **裁决权在用户**：agent 调研、建议、记账，但 decision 定案须 `--user-approved` 见证用户在对话中的明确拍板——账本记录裁决，不产生裁决
+7. **人读标题，机读 ID**：任务 ID（T-YYYYMMDD-N）是 agent/CLI 的引用锚；一切用户可见输出（简报注入、add 确认、视图标题）标题在前、ID 入括号/小字
 
 ## 信号源（自含，零外部依赖）
 

@@ -248,9 +248,9 @@ def task_page(task: dict, tasks: dict) -> str:
         else:
             parent_html = f' <span class="meta">父任务 {esc(task["parent"])}</span>'
     header = (
-        f'<h1>{esc(tid)} · {esc(task["title"])}</h1>'
+        f'<h1>{esc(task["title"])}</h1>'
         f'<div><span class="chip c-{st}">{STATUS_ZH.get(st, st)}</span>'
-        f'<span class="meta"> {esc(task["unit"])} · {esc(task["ts0"])} ~ {esc(task["ts1"])}{parent_html}</span></div>')
+        f'<span class="meta"> {esc(tid)} · {esc(task["unit"])} · {esc(task["ts0"])} ~ {esc(task["ts1"])}{parent_html}</span></div>')
 
     parts = ['<h2>契约</h2><div class="grid">' + "".join(
         f'<div class="card"><div class="meta">{zh}</div><div>{esc(task["contract"].get(k) or "—")}</div></div>'
@@ -487,8 +487,8 @@ def causal_children(t: dict, tasks: dict) -> list[str]:
     return children
 
 def task_node(t: dict, tasks: dict) -> str:
-    summary = (f'<summary class="tsum"><a href="{esc(t["id"])}.html">{esc(t["id"])}</a> · '
-               f'{esc(t["title"])} <span class="meta">{esc(t["unit"])}</span>'
+    summary = (f'<summary class="tsum"><a href="{esc(t["id"])}.html">{esc(t["title"])}</a> '
+               f'<span class="meta">{esc(t["id"])} · {esc(t["unit"])}</span>'
                f'<span class="chip c-{t["status"]}">{STATUS_ZH.get(t["status"], t["status"])}</span></summary>')
     kids = causal_children(t, tasks)
     body = f'<ul class="tree">{"".join(kids)}</ul>' if kids else ""
@@ -652,7 +652,9 @@ def _run_add_locked(root: Path, args: argparse.Namespace) -> None:
     render_views(root)
     inner_git_commit(root, f"{ev['type']} {task_id}")
     _update_runlog_marker(REPO_ROOT, root)
-    print(f"[tasklog] + {ev['ts']} {ev['type']} -> {task_id} (views regenerated)")
+    title = ev.get("title") or next((e.get("title", "") for e in events
+                                     if e["type"] == "task.new" and e["task"] == task_id), "")
+    print(f"[tasklog] + {ev['ts']} {ev['type']} -> {task_id} · {title} (views regenerated)")
 
 def run_render(root: Path, args: argparse.Namespace) -> None:
     written = render_views(root)
@@ -813,7 +815,8 @@ def run_brief(root: Path) -> None:
         if open_tasks:
             lines.append("[tasklog] 未结任务（决策发生即记账 add … --task @last；视图 .whylog/view/index.html）")
             for t in sorted(open_tasks, key=lambda x: x["ts1"], reverse=True)[:5]:
-                lines.append(f"- {t['id']} {t['title']} [{STATUS_ZH[t['status']]}] 单位 {t['unit']} 最后活动 {t['ts1']}")
+                lines.append(f"- {t['title']}（{t['id']}）[{STATUS_ZH[t['status']]}] "
+                             f"单位 {t['unit']} 最后活动 {t['ts1']}")
     lines += _runlog_drift(REPO_ROOT, root)
     if lines:
         print("\n".join(lines))
