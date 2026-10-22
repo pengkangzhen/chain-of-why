@@ -1,6 +1,7 @@
 """Smoke tests for scripts/render_tasklog.py (event append, validation, render+rotation)."""
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -129,7 +130,7 @@ def test_backfill_ts_controls_id_date(tmp_path):
         mod.norm_ts("2026-10-17 21:00")                     # space instead of T
 
 
-def test_index_groups_by_stage_and_ascending():
+def test_index_rows_narrative_order_with_stage_labels():
     events = [
         {"ts": "2026-10-01T10:00", "by": "h", "task": "T-1", "type": "task.new",
          "title": "韧性卡", "unit": "2-resilience/metrics"},
@@ -143,8 +144,9 @@ def test_index_groups_by_stage_and_ascending():
     stages = [("0-network", "网络层"), ("1-risk", "风险量化"), ("2-resilience", "韧性量化")]
     html = mod.index_page(mod.build_tasks(events), stages, goal="研究目标一句话")
     assert "研究目标一句话" in html                                  # charter goal on index
-    assert html.index("风险量化") < html.index("韧性量化")          # stage order follows config
-    assert html.index("风险前") < html.index("风险后")              # ascending within stage
+    order = [html.index(s) for s in ("风险前", "韧性卡", "风险后", "杂项")]
+    assert order == sorted(order)               # one narrative rail, rows in birth order
+    assert "风险量化" in html and "韧性量化" in html                # stage labels ride the rows
     assert "其他" in html and "杂项" in html                        # unknown unit -> 其他
 
 
@@ -315,3 +317,37 @@ def test_index_chain_shows_link_nodes_and_inbound_markers():
     html = mod.index_page(mod.build_tasks(events), [])
     assert 't-link">衔接' in html and "口径调整" in html        # link events surface as chain nodes
     assert "↩1" in html                                         # inbound marker on the divider
+
+
+def test_index_map_mainline_and_merge_arcs():
+    events = [
+        {"ts": "2026-10-01T10:00", "by": "h", "task": "T-1", "type": "task.new",
+         "title": "主线任务", "unit": "1-risk/a"},
+        {"ts": "2026-10-01T11:00", "by": "h", "task": "T-1", "type": "decision",
+         "chosen": "B", "rationale": "走扩展", "paper_line": "论文一"},
+        {"ts": "2026-10-02T10:00", "by": "h", "task": "T-2", "type": "task.new",
+         "title": "支线任务", "unit": "1-risk/b"},
+        {"ts": "2026-10-03T10:00", "by": "h", "task": "T-3", "type": "task.new",
+         "title": "汇入任务", "unit": "1-risk/c", "parent": "T-1"},
+        {"ts": "2026-10-03T11:00", "by": "h", "task": "T-3", "type": "link",
+         "to": "T-2", "why": "复用结论"},
+        {"ts": "2026-10-04T10:00", "by": "h", "task": "T-4", "type": "task.new",
+         "title": "废弃任务", "unit": "1-risk/d"},
+        {"ts": "2026-10-04T11:00", "by": "h", "task": "T-4", "type": "status",
+         "state": "dropped"},
+        {"ts": "2026-10-05T10:00", "by": "h", "task": "T-5", "type": "task.new",
+         "title": "外部课题", "unit": "misc/x"},
+        {"ts": "2026-10-05T11:00", "by": "h", "task": "T-5", "type": "status",
+         "state": "active", "scope": "external"},
+    ]
+    html = mod.index_page(mod.build_tasks(events),
+                          [("1-risk", "风险量化", "如何量化地缘政治风险？")])
+    assert 'class="gg"' in html and "主轨" in html                # git-log map with legend
+    assert "lane main" in html and "lane ext" in html             # trunk + external rail
+    assert "项目外（另一项目的主线）" in html                      # external rail in the legend
+    lx = lambda cls: int(re.search(rf'class="{cls}" x1="(\d+)"', html).group(1))
+    assert lx("lane ext") < lx("lane main")                       # external rail LEFT of the trunk
+    assert "e-fork" in html and "e-merge" in html                 # peel-off fork + merge-in arc
+    assert "复用结论" in html                                     # link surfaces as merge with why
+    order = [html.index(s) for s in ("主线任务", "支线任务", "汇入任务", "废弃任务", "外部课题")]
+    assert order == sorted(order)                                 # rows in birth order

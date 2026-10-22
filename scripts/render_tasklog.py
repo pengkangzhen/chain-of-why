@@ -53,14 +53,14 @@ KIND_ZH = {"survey": "调研", "cause": "原因", "trial": "实证"}
 
 # event type -> (required payload keys, optional payload keys); meta keys: ts/by/task/type
 SCHEMA = {
-    "task.new": (["title", "unit"], ["parent", "purpose", "input", "action", "output"]),
+    "task.new": (["title", "unit"], ["parent", "purpose", "input", "action", "output", "scope"]),
     "obs": (["text"], ["evidence"]),
     "finding": (["text"], ["evidence", "kind"]),
     "option": (["option_id", "text"], ["effect", "cost", "ref"]),
     "decision": (["chosen", "rationale"], ["paper_line", "system_line", "supersedes"]),
     "impact": (["text"], []),
     "link": (["to", "why"], []),
-    "status": (["state"], ["note", "method_doc"]),
+    "status": (["state"], ["note", "method_doc", "scope"]),
     "note": (["text"], []),
 }
 
@@ -140,6 +140,7 @@ def build_tasks(events: list[dict]) -> dict[str, dict]:
         if ev["type"] == "task.new":
             tasks[t] = {"id": t, "title": ev["title"], "unit": ev.get("unit", ""),
                         "parent": ev.get("parent"), "ts0": ev["ts"], "ts1": ev["ts"],
+                        "scope": ev.get("scope"),
                         "contract": {k: ev.get(k) for k in ("purpose", "input", "action", "output")},
                         "status": "active", "events": []}
         task = tasks.get(t)
@@ -149,6 +150,8 @@ def build_tasks(events: list[dict]) -> dict[str, dict]:
         task["ts1"] = max(task["ts1"], ev.get("ts", task["ts1"]))
         if ev["type"] == "status":
             task["status"] = ev["state"]
+            if ev.get("scope"):
+                task["scope"] = ev["scope"]
     return tasks
 
 def current_decision(task: dict) -> dict | None:
@@ -235,37 +238,40 @@ details[open]>summary.row::before{content:"▾"}
 .tx{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .evd{justify-self:end;max-width:24ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 color:var(--muted);font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
-/* ---- task DAG map (git-log style) ---- */
-.dag{width:100%;height:auto;display:block}
-.dag path{fill:none;stroke-width:2}
-.e-fork{stroke:#94a3b8}
-.e-merge{stroke:#0f766e;stroke-dasharray:5 4}
-.dag text{font-size:12px;fill:#1f2937}
-.dag a{text-decoration:none}
-.dag a:hover text.dg-tt{fill:var(--blue);font-weight:600}
-.dg-dropped{fill:#9ca3af;text-decoration:line-through}
-.dg-dc{fill:#6d28d9}.dg-dc-x{fill:#cbd5e1}
-.dg-bh{font-size:12px;font-weight:600;fill:#6b7280;letter-spacing:.05em}
-.dg-bh.meta{font-weight:400;font-size:11px}
-.dg-sep{stroke:#e5e7eb;stroke-width:1}
-.graph-b{overflow-x:auto;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 8px;margin-bottom:14px}
-/* ---- reasoning chain view ---- */
-.ch-task details>summary{display:flex;gap:10px;align-items:baseline;cursor:pointer;
-list-style:none;padding:2px 4px;border-radius:6px}
-.ch-task details>summary::-webkit-details-marker{display:none}
-.ch-task details>summary:hover{background:var(--hover)}
-.ch-task details>summary::before{content:"▸";font-size:9px;color:var(--muted);margin-right:2px}
-.ch-task details[open]>summary::before{content:"▾"}
-.ch-task details>summary .chip{margin-left:auto;flex:none}
-.ch-task details>summary a{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ch-task details>ul{margin:0}
-.ch-q{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);
-border-left:4px solid #1f2937;border-radius:10px;padding:10px 14px;margin:2px 0 8px;font-weight:600}
-.ch-task{display:flex;gap:10px;align-items:baseline;margin:10px 0 2px;padding-top:8px;
-border-top:1px dashed #cbd5e1;list-style:none}
-.ch-task a{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ch-task .chip{margin-left:auto;flex:none}
-li.no-hit{display:none} .ch-sec.no-hit{display:none}
+/* ---- mainline map (git-log style; rows unfold their reasoning chains) ---- */
+.gg-wrap{background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px 12px 10px;margin-bottom:14px}
+.gg-legend{font-size:11.5px;color:var(--muted);padding:2px 2px 6px}
+.lg{display:inline-block;width:24px;border-top:2px solid #94a3b8;vertical-align:3px;margin-right:4px}
+.lg.main{border-top:3px solid #334155}
+.lg.ext{border-top:2px solid #b45309}
+.lg.dash{border-top-style:dashed;border-top-color:#0f766e}
+.gg{position:relative}
+.gg-edges{position:absolute;left:0;top:0;height:100%;z-index:1;pointer-events:none}
+.gg-edges .lane{stroke:#dbe1ea;stroke-width:2}
+.gg-edges .lane.main{stroke:#334155;stroke-width:2.5}
+.gg-edges .lane.ext{stroke:#b45309;stroke-width:2}
+.gg-edges path{fill:none;stroke-width:1.6}
+.gg-edges .e-fork{stroke:#94a3b8}
+.gg-edges .e-merge{stroke:#0f766e;stroke-dasharray:5 4}
+.gg-row{position:relative}
+.gg-row.no-hit{display:none}
+.gg-row>details>summary{position:relative;display:flex;gap:8px;align-items:center;height:38px;
+padding:0 10px 0 var(--tx);cursor:pointer;list-style:none;border-radius:6px}
+.gg-row>details>summary:hover{background:var(--hover)}
+.gg-row>details>summary::-webkit-details-marker{display:none}
+.gg-row>details>summary::before{content:"▸";position:absolute;left:2px;top:50%;
+transform:translateY(-55%);font-size:9px;color:var(--muted)}
+.gg-row details[open]>summary::before{content:"▾"}
+.gg-dot{position:absolute;z-index:2;width:9px;height:9px;border-radius:50%;transform:translate(-50%,-50%)}
+.gg-dot.big{width:12px;height:12px}
+.g-stage{flex:none;color:#94a3b8;font-size:11px;cursor:help}
+.gg-t{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.g-dec{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#6d28d9;font-size:12px}
+.g-dropped{text-decoration:line-through}
+.gg-row>details>ul.tree{margin:0;padding:2px 12px 10px var(--tx)}
+.s-count{display:inline-flex;align-items:center;gap:5px;margin-right:14px;color:var(--muted);font-size:12.5px}
+.sdot{display:inline-block;width:10px;height:10px;border-radius:50%}
+li.no-hit{display:none}
 /* ---- task card page ---- */
 .card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:12px}
 blockquote{margin:0 0 10px;padding:8px 14px;border-left:3px solid #93c5fd;background:#f8fafc;border-radius:0 8px 8px 0}
@@ -290,101 +296,158 @@ footer{margin-top:30px;color:var(--muted);font-size:12px;text-align:center}
 GRAPH_DOT = {"active": "#1d4ed8", "decided": "#6d28d9", "promoted": "#15803d", "dropped": "#9ca3af"}
 
 
-def _dag_edge(parts: list[str], x1: float, y1: float, x2: float, y2: float,
-              cls: str, extra: str, tip: str, src: str, dst: str) -> None:
-    d = (f"M{x1} {y1}L{x2} {y2}" if x1 == x2 else
-         f"M{x1} {y1}C{x1} {(y1 + y2) / 2},{x2} {(y1 + y2) / 2},{x2} {y2}")
-    parts.append(f'<path class="{cls}" data-f="{src}" data-t="{dst}" d="{d}"{extra}>'
-                 f"<title>{esc(tip)}</title></path>")
-
-
 def task_graph(tasks: dict, stages: list) -> str:
-    """Structure map (collapsed by default next to the chain): stage bands, one lane
-    row per task, parent = solid fork, link = dashed merge-back; node click anchors
-    to the task's divider in the chain below."""
-    secs = stage_sections(tasks, stages)
-    if not secs:
+    """Narrative map, git-log style: one row per task in birth order; the trunk
+    collects tasks that serve the deliverables -- a decision carrying
+    paper_line/system_line, or status promoted (dropped always falls off);
+    the external-project rail (scope=external) runs to the trunk's left;
+    side threads peel off onto their own lanes and merge back along link events
+    -- 其他研究内容不断加入主线. A row click anchors to the chain row below."""
+    if not tasks:
         return ""
-    PAD, LANE_W, ROW, HDR = 16, 22, 28, 34
-    order: list[dict] = []
-    bands: list[tuple[str, int, int]] = []
-    for label, group in secs:
-        g = sorted(group, key=lambda x: x["ts1"])
-        bands.append((label, len(order), len(g)))
-        order.extend(g)
-    rows = {t["id"]: i for i, t in enumerate(order)}
+    PAD, ROW, GUT, LGAP = 14, 38, 18, 26
+
+    def yrow(i: float) -> float:
+        return PAD + i * ROW + ROW / 2
+
+    order = sorted(tasks.values(), key=lambda t: (t["ts0"], t["id"]))
+    row_of = {t["id"]: i for i, t in enumerate(order)}
+    links = [(t["id"], e["to"], e.get("why", "")) for t in order for e in t["events"]
+             if e["type"] == "link" and e.get("to") in row_of and e["to"] != t["id"]]
+
+    # mainline heuristic: deliverable-serving decisions or promoted status win,
+    # dropped always falls to a side lane (a dead end is never the mainline)
+    def serves_deliverable(t: dict) -> bool:
+        return any(e["type"] == "decision" and (e.get("paper_line") or e.get("system_line"))
+                   for e in t["events"])
+    main = {t["id"] for t in order if t["status"] == "promoted"
+            or (t["status"] != "dropped" and serves_deliverable(t))}
+    ext = {t["id"] for t in order if t.get("scope") == "external"}
+    main -= ext  # another project's line never joins this project's trunk
+    has_ext = bool(ext)
+    ext_lane = 0 if has_ext else -1  # the external rail runs LEFT of the trunk
+    trunk = 1 if has_ext else 0
+
+    # a side lane stays open until the last later task that merges back into it
+    hold: dict[str, int] = {}
+    for m, t, _ in links:
+        if row_of[t] < row_of[m]:
+            hold[t] = max(hold.get(t, row_of[t]), row_of[m])
+
     lane_of: dict[str, int] = {}
-    last_row: list[int] = []
-    for t in order:
-        p = t.get("parent")
-        lane = None
-        if p in lane_of and last_row[lane_of[p]] < rows[t["id"]]:
-            lane = lane_of[p]
+    lane_open: dict[int, int] = {}
+    lane_close: dict[int, int] = {}
+    for i, t in enumerate(order):
+        tid = t["id"]
+        if tid in ext:
+            lane = ext_lane
+        elif tid in main:
+            lane = trunk
         else:
-            lane = next((i for i, r in enumerate(last_row) if r < rows[t["id"]]), None)
-        if lane is None:
-            last_row.append(-1)
-            lane = len(last_row) - 1
-        lane_of[t["id"]] = lane
-        last_row[lane] = rows[t["id"]]
-    lx = PAD + len(last_row) * LANE_W + 6
+            p = t.get("parent")
+            if p in lane_of and lane_of[p] > trunk:
+                lane = lane_of[p]  # continue the parent's side thread
+            else:
+                lane = next((l for l in range(trunk + 1, len(lane_open) + 2)
+                             if l not in lane_open or lane_close[l] < i), trunk + 1)
+        lane_of[tid] = lane
+        lane_open[lane] = min(lane_open.get(lane, i), i)
+        if lane == trunk:
+            lane_close[trunk] = max(lane_close.get(trunk, 0), i)
+        else:
+            lane_close[lane] = max(lane_close.get(lane, i), max(i, hold.get(tid, i)))
 
-    ys: dict[str, int] = {}
-    head: list[str] = []
-    y = PAD
-    W = lx + 690
-    for label, start, n in bands:
-        if y > PAD:
-            head.append(f'<line class="dg-sep" x1="0" x2="{W}" y1="{y - 12}" y2="{y - 12}"/>')
-        head.append(f'<g class="dg-band" data-band="{esc(label)}">'
-                    f'<text class="dg-bh" x="2" y="{y + 14}">{esc(label)}</text>'
-                    f'<text class="dg-bh meta" x="{lx + 6}" y="{y + 14}">{n} 任务</text></g>')
-        y += HDR
-        for t in order[start:start + n]:
-            ys[t["id"]] = y
-            y += ROW
-    H = y + PAD
+    if has_ext:  # the external rail runs to the chart bottom while its thread is alive
+        rows_ext = [row_of[tid] for tid in ext]
+        lane_open[ext_lane] = min(rows_ext)
+        alive = any(tasks[tid]["status"] == "active" for tid in ext)
+        lane_close[ext_lane] = len(order) - 1 if alive else max(rows_ext)
 
-    inb: dict[str, int] = {}
-    for t in order:
-        for e in t["events"]:
-            if e["type"] == "link" and e.get("to") in tasks:
-                inb[e["to"]] = inb.get(e["to"], 0) + 1
+    n_lanes = max(lane_of.values()) + 1
+    tx = GUT + n_lanes * LGAP + 14
 
-    parts = [f'<svg class="dag" viewBox="0 0 {W} {H}" role="img">',
-             '<defs><marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" '
-             'markerHeight="7" orient="auto-start-reverse">'
-             '<path d="M0 0L8 4L0 8z" fill="#0f766e"/></marker></defs>', *head]
+    def xg(l: int) -> float:
+        return GUT + l * LGAP
+
+    def lane_cls(l: int) -> str:
+        if l == trunk:
+            return "lane main"
+        return "lane ext" if has_ext and l == ext_lane else "lane"
+
+    svg = [f'<line class="{lane_cls(l)}" x1="{xg(l):.0f}" x2="{xg(l):.0f}" '
+           f'y1="{yrow(lane_open[l]):.0f}" y2="{yrow(lane_close[l]):.0f}"/>'
+           for l in sorted(lane_open)]
+    eg = []
+    for t in order:  # fork: peel off the parent's lane into the child's
+        p, lane = t.get("parent"), lane_of[t["id"]]
+        if p in lane_of and lane_of[p] != lane:
+            ya, yb = yrow(row_of[p]), yrow(row_of[t["id"]])
+            xa, xb = xg(lane_of[p]), xg(lane)
+            svg.append(f'<path class="e-fork" d="M{xa:.0f} {ya:.0f}'
+                       f'C{xa:.0f} {yb:.0f},{xb:.0f} {yb:.0f},{xb:.0f} {yb:.0f}"/>')
+            eg.append({"k": "fork", "a": p, "b": t["id"]})
+    for m, t, _ in links:  # merge-in: the side lane bends into its absorber
+        rt_, rm_ = row_of[t], row_of[m]
+        xt_, xm_ = xg(lane_of[t]), xg(lane_of[m])
+        if rt_ < rm_:
+            ym = yrow(rm_)
+            if xt_ != xm_:
+                svg.append(f'<path class="e-merge" d="M{xt_:.0f} {ym - 24:.0f}'
+                           f'C{xt_:.0f} {ym - 4:.0f},{xm_:.0f} {ym - 4:.0f},{xm_:.0f} {ym:.0f}"/>')
+            eg.append({"k": "merge", "a": t, "b": m})
+        else:  # backward link: straight dashed arc between the two dots
+            ya, yb = yrow(rt_), yrow(rm_)
+            svg.append(f'<path class="e-merge" d="M{xt_:.0f} {ya:.0f}'
+                       f'C{xt_:.0f} {yb - 16:.0f},{xm_:.0f} {yb - 16:.0f},{xm_:.0f} {yb:.0f}"/>')
+            eg.append({"k": "direct", "a": t, "b": m})
+
+    stage_of: dict[str, str] = {}
+    for label, group in stage_sections(tasks, stages):
+        for t in group:
+            stage_of[t["id"]] = label
+    qmap = {r[1]: (r[2] if len(r) > 2 else "") for r in stages} if stages else {}
+
+    rows = []
     for t in order:
-        p = t.get("parent")
-        if p in rows and p != t["id"]:
-            _dag_edge(parts, PAD + lane_of[p] * LANE_W, ys[p], PAD + lane_of[t["id"]] * LANE_W,
-                      ys[t["id"]], "e-fork", "", f"{p} 分叉出 {t['id']}", p, t["id"])
-    for t in order:
-        for e in t["events"]:
-            if e["type"] == "link" and e.get("to") in rows and e["to"] != t["id"]:
-                _dag_edge(parts, PAD + lane_of[t["id"]] * LANE_W, ys[t["id"]],
-                          PAD + lane_of[e["to"]] * LANE_W, ys[e["to"]], "e-merge",
-                          ' marker-end="url(#arr)"',
-                          f"{t['id']} 衔接 {e['to']}：{e.get('why', '')}", t["id"], e["to"])
-    for t in order:
-        cx, cy = PAD + lane_of[t["id"]] * LANE_W, ys[t["id"]]
-        n = inb.get(t["id"], 0)
-        title = t["title"][:20] + ("…" if len(t["title"]) > 20 else "") + (f" ↩{n}" if n else "")
+        tid, lane = t["id"], lane_of[t["id"]]
+        evs = "".join(_node(e, tasks=tasks) for e in t["events"] if e["type"] != "task.new")
+        if not evs:  # young task, no obs/option yet: fall back to contract purpose
+            pur = t["contract"].get("purpose")
+            if pur:
+                evs = (f'<li class="n-task"><div class="row"><span class="tag t-task">目的</span>'
+                       f'<span class="tx">{esc(pur[:100] + ("…" if len(pur) > 100 else ""))}</span></div></li>')
+        on_main, st = tid in main, t["status"]
+        stage = "项目外" if tid in ext else stage_of.get(tid, "")
+        q = qmap.get(stage_of.get(tid, ""), "")
         cur = current_decision(t)
+        dec = ""
         if cur:
             rat = cur.get("rationale", "")
-            rat = rat[:20] + ("…" if len(rat) > 20 else "")
-            dec, dc_cls = esc(f"{cur.get('chosen', '')}—{rat}"), "dg-dc"
-        else:
-            dec, dc_cls = "—", "dg-dc-x"
-        parts.append(f'<a href="#{esc(t["id"])}">'
-                     f'<circle cx="{cx}" cy="{cy}" r="4.5" fill="{GRAPH_DOT.get(t["status"], "#6b7280")}">'
-                     f'<title>{esc(t["id"])} · {esc(t["title"])}</title></circle>'
-                     f'<text x="{lx}" y="{cy + 4}" class="dg-tt dg-{t["status"]}">{esc(title)}</text>'
-                     f'<text x="{lx + 326}" y="{cy + 4}" class="{dc_cls}">{dec}</text></a>')
-    parts.append("</svg>")
-    return f'<div class="graph-b">{"".join(parts)}</div>'
+            dec = f"◆ {cur.get('chosen', '')}·{rat[:30]}" + ("…" if len(rat) > 30 else "")
+        n = sum(1 for _, tt, _ in links if tt == tid)
+        q_attr = f' title="阶段问题：{esc(q)}"' if q else ""
+        rows.append(
+            f'<div class="gg-row" id="{esc(tid)}"><details><summary>'
+            f'<i class="gg-dot{" big" if on_main or tid in ext else ""}" data-lane="{lane}" '
+            f'data-row="{esc(tid)}" data-st="{st}" style="left:{xg(lane):.0f}px;'
+            f'background:{GRAPH_DOT.get(st, "#6b7280")}"></i>'
+            f'<span class="g-stage"{q_attr}>{esc(stage)}</span>'
+            f'<a class="gg-t{" g-dropped" if st == "dropped" else ""}" href="{esc(tid)}.html">'
+            f'{esc(t["title"])}</a>'
+            + (f'<span class="ts-meta" title="被其他任务衔接">↩{n}</span>' if n else "")
+            + (f'<span class="g-dec">{esc(dec)}</span>' if dec else "")
+            + f'</summary><ul class="tree">{evs}</ul></details></div>')
+
+    return (f'<div class="gg-wrap"><div class="gg-legend">'
+            '<span class="lg main"></span> 主轨（裁决进交付物 / 已转正）　'
+            + ('<span class="lg ext"></span> 项目外（另一项目的主线）　' if has_ext else "")
+            + '<span class="lg"></span> 支线　'
+            + '<span class="lg dash"></span> 衔接汇入（展开行看为什么）</div>'
+            f'<div class="gg" id="gg" style="--tx:{tx:.0f}px" data-gut="{GUT}" '
+            f'data-lgap="{LGAP}" data-trunk="{trunk}" data-ext="{ext_lane if has_ext else ""}">'
+            f'<svg class="gg-edges" id="gg-edges" width="{GUT + n_lanes * LGAP + 8:.0f}" '
+            f'aria-hidden="true">{"".join(svg)}</svg>{"".join(rows)}</div>'
+            f'<script type="application/json" id="gg-eg">{json.dumps(eg)}</script></div>')
 
 
 def bar_html() -> str:
@@ -404,25 +467,44 @@ const q=document.getElementById('q');let mode='all';
 function match(li){
  const s=q.value.trim().toLowerCase();
  if(s&&!li.textContent.toLowerCase().includes(s))return false;
- if(mode==='open')return !!li.querySelector(':scope .chip.c-active, :scope .chip.c-decided');
+ if(mode==='open')return !!li.querySelector(':scope .gg-dot[data-st="active"], :scope .gg-dot[data-st="decided"]');
  if(mode!=='all'){
-  const t=li.querySelector(':scope>.row .tag, :scope>details>summary.row .tag');
+  const t=li.querySelector(':scope>.row .tag, :scope>details>summary .tag');
   if(!t||!t.className.includes(mode))return false;}
  return true;}
 function mark(li){let hit=match(li);
- li.querySelectorAll(':scope>details>ul>li, :scope>ul>li').forEach(c=>{if(mark(c))hit=true;});
+ li.querySelectorAll(':scope>details>ul>li').forEach(c=>{if(mark(c))hit=true;});
  li.classList.toggle('no-hit',!hit);return hit;}
+function relayout(){
+ const gg=document.getElementById('gg'),svg=document.getElementById('gg-edges');
+ if(!gg||!svg)return;
+ const box=gg.getBoundingClientRect(),gut=+gg.dataset.gut,lg=+gg.dataset.lgap,
+       trunk=+gg.dataset.trunk,ext=gg.dataset.ext===''?null:+gg.dataset.ext;
+ const pos={},lanes={};
+ document.querySelectorAll('.gg-dot').forEach(d=>{
+  const r=d.getBoundingClientRect();
+  pos[d.dataset.row]={x:r.left+r.width/2-box.left,y:r.top+r.height/2-box.top};
+  (lanes[d.dataset.lane]=lanes[d.dataset.lane]||[]).push(pos[d.dataset.row]);});
+ let h='';
+ for(const[l,ps]of Object.entries(lanes)){const x=gut+l*lg,ys=ps.map(p=>p.y);
+  h+=`<line class="${+l===trunk?'lane main':(+l===ext?'lane ext':'lane')}" x1="${x}" x2="${x}" y1="${Math.min(...ys)}" y2="${Math.max(...ys)}"/>`;}
+ for(const e of EDGES){const a=pos[e.a],b=pos[e.b];if(!a||!b)continue;
+  if(e.k==='fork')h+=`<path class="e-fork" d="M${a.x} ${a.y}C${a.x} ${b.y},${b.x} ${b.y},${b.x} ${b.y}"/>`;
+  else if(e.k==='merge'){if(a.x!==b.x)h+=`<path class="e-merge" d="M${a.x} ${b.y-24}C${a.x} ${b.y-4},${b.x} ${b.y-4},${b.x} ${b.y}"/>`;}
+  else h+=`<path class="e-merge" d="M${a.x} ${a.y}C${a.x} ${b.y-16},${b.x} ${b.y-16},${b.x} ${b.y}"/>`;}
+ svg.innerHTML=h;}
+const EDGES=JSON.parse(document.getElementById('gg-eg').textContent||'[]');
 function apply(){
- document.querySelectorAll('.ch-sec>.tree>li').forEach(mark);
- document.querySelectorAll('.ch-sec').forEach(sec=>{
-  sec.classList.toggle('no-hit',!sec.querySelector('li:not(.no-hit)'))});
- const vis=document.querySelectorAll('.ch-sec li:not(.no-hit)').length;
- const tot=document.querySelectorAll('.ch-sec li').length;
- document.getElementById('cnt').textContent=vis+' / '+tot+' 节点';}
+ document.querySelectorAll('.gg-row').forEach(mark);
+ const vis=document.querySelectorAll('.gg-row:not(.no-hit)').length;
+ const tot=document.querySelectorAll('.gg-row').length;
+ document.getElementById('cnt').textContent=vis+' / '+tot+' 任务';
+ relayout();}
 q.addEventListener('input',apply);
 document.querySelectorAll('.fch').forEach(b=>b.addEventListener('click',()=>{
  document.querySelectorAll('.fch').forEach(x=>x.classList.remove('on'));b.classList.add('on');
  mode=b.dataset.f;apply();}));
+document.querySelectorAll('.gg-row details').forEach(d=>d.addEventListener('toggle',relayout));
 apply();
 </script>"""
 
@@ -451,7 +533,9 @@ def task_page(task: dict, tasks: dict) -> str:
     header = (
         f'<h1>{esc(task["title"])}</h1>'
         f'<div><span class="chip c-{st}">{STATUS_ZH.get(st, st)}</span>'
-        f'<span class="meta"> {esc(tid)} · {esc(task["unit"])} · {esc(task["ts0"])} ~ {esc(task["ts1"])}{parent_html}</span></div>')
+        f'<span class="meta"> {esc(tid)} · {esc(task["unit"])}'
+        + (' · 项目外' if task.get("scope") == "external" else "")
+        + f' · {esc(task["ts0"])} ~ {esc(task["ts1"])}{parent_html}</span></div>')
 
     parts = ['<h2>契约</h2><div class="grid">' + "".join(
         f'<div class="card"><div class="meta">{zh}</div><div>{esc(task["contract"].get(k) or "—")}</div></div>'
@@ -692,42 +776,17 @@ def task_node(t: dict, tasks: dict) -> str:
     return f"<li><details>{summary}{body}</details></li>"
 
 def index_page(tasks: dict, stages: list, goal: str = "") -> str:
-    """Single surface: per stage the founding question roots a vertical chain of every
-    task's events in narrative order; task dividers carry status + inbound marks.
-    Cards T-*.html keep the per-task deep dive; the filter bar drives visibility."""
+    """Single surface: the git-log mainline map; every row unfolds its reasoning
+    chain in place. Cards T-*.html keep the per-task deep dive; the filter bar
+    drives row visibility."""
     counts = {s: sum(1 for t in tasks.values() if t["status"] == s) for s in STATUSES}
-    chips = " ".join(f'<span class="chip c-{s}">{STATUS_ZH[s]} {counts[s]}</span>' for s in STATUSES)
+    chips = " ".join(f'<span class="s-count"><i class="sdot" style="background:{GRAPH_DOT[s]}"></i>'
+                     f'{STATUS_ZH[s]} {counts[s]}</span>' for s in STATUSES)
     header = "<h1>推理链</h1>"
     if goal:
         header += f'<div class="goal">{esc(goal)}</div>'
     header += f"<div>{chips}</div>"
-
-    secs = stage_sections(tasks, stages)
-    qmap = {row[1]: (row[2] if len(row) > 2 else "") for row in stages} if stages else {}
-    inb: dict[str, int] = {}
-    for x in tasks.values():
-        for e in x["events"]:
-            if e["type"] == "link" and e.get("to") in tasks:
-                inb[e["to"]] = inb.get(e["to"], 0) + 1
-
-    body = [bar_html(), task_graph(tasks, stages)]
-    for label, group in secs:
-        q = qmap.get(label, "")
-        root = (f'<div class="ch-q"><span class="tag t-task">阶段问题</span> {esc(q)}</div>'
-                if q else "")
-        rows = []
-        for t in sorted(group, key=lambda x: x["ts1"]):
-            n = inb.get(t["id"], 0)
-            evs = "".join(_node(e, tasks=tasks) for e in t["events"] if e["type"] != "task.new")
-            rows.append(f'<li class="ch-task" id="{esc(t["id"])}"><details>'
-                        f'<summary><a href="{esc(t["id"])}.html">{esc(t["id"])} · {esc(t["title"])}</a>'
-                        + (f'<span class="ts-meta"> ↩{n}</span>' if n else "")
-                        + f'<span class="chip c-{t["status"]}">'
-                          f'{STATUS_ZH.get(t["status"], t["status"])}</span></summary>'
-                        f'<ul class="tree">{evs}</ul></details></li>')
-        body.append(f'<section class="ch-sec"><h2>{esc(label)}</h2>{root}'
-                    f'<ul class="tree">{"".join(rows)}</ul></section>')
-    return _page("index", header, "".join(body) + SCRIPT)
+    return _page("index", header, bar_html() + task_graph(tasks, stages) + SCRIPT)
 
 def render_views(root: Path) -> list[Path]:
     view = root / "view"
@@ -765,6 +824,8 @@ def build_add_parser(add: argparse.ArgumentParser) -> None:
     s.add_argument("--unit", required=True)
     for k in ("parent", "purpose", "input", "action", "output"):
         s.add_argument(f"--{k.replace('_', '-')}")
+    s.add_argument("--scope", choices=("internal", "external"), dest="scope",
+                   help="internal=本项目（默认） external=另一项目的线（项目外轨渲染）")
     with_by(s)
 
     for name in ("obs", "finding"):
@@ -814,6 +875,8 @@ def build_add_parser(add: argparse.ArgumentParser) -> None:
     s.add_argument("--state", required=True, choices=STATUSES)
     s.add_argument("--note")
     s.add_argument("--method-doc", help="doc anchor, e.g. docs/2-resilience/x.md#sec")
+    s.add_argument("--scope", choices=("internal", "external"), dest="scope",
+                   help="re-affirm scope: external puts the task on the external-project rail")
     with_by(s)
 
     s = at.add_parser("note")
@@ -828,7 +891,7 @@ PAYLOAD_KEYS = {
     "decision": ("chosen", "rationale", "paper_line", "system_line", "supersedes"),
     "impact": ("text",),
     "link": ("to", "why"),
-    "status": ("state", "note", "method_doc"),
+    "status": ("state", "note", "method_doc", "scope"),
     "note": ("text",),
 }
 
@@ -847,7 +910,7 @@ def _run_add_locked(root: Path, args: argparse.Namespace) -> None:
         task_id = next_task_id(root, ts)
         ev = {"ts": ts, "by": args.by, "task": task_id, "type": "task.new",
               "title": args.title, "unit": args.unit}
-        for k in ("parent", "purpose", "input", "action", "output"):
+        for k in ("parent", "purpose", "input", "action", "output", "scope"):
             v = getattr(args, k, None)
             if v:
                 ev[k] = v
@@ -1034,7 +1097,8 @@ def run_brief(root: Path) -> None:
         tasks = build_tasks(load_events(root))
         open_tasks = [t for t in tasks.values() if t["status"] in ("active", "decided")]
         if open_tasks:
-            lines.append("[why] 未结任务（决策发生即记账 add … --task @last；视图 .whylog/view/index.html）")
+            lines.append("[why] 未结任务（决策发生即记账 add … --task @last；落账凭 [why] 回执即完成，"
+                         "勿在回复里另写落账总结；视图 .whylog/view/index.html）")
             for t in sorted(open_tasks, key=lambda x: x["ts1"], reverse=True)[:5]:
                 lines.append(f"- {t['title']}（{t['id']}）[{STATUS_ZH[t['status']]}] "
                              f"单位 {t['unit']} 最后活动 {t['ts1']}")
