@@ -235,7 +235,30 @@ details[open]>summary.row::before{content:"▾"}
 .tx{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .evd{justify-self:end;max-width:24ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 color:var(--muted);font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+/* ---- task DAG map (git-log style) ---- */
+.dag{width:100%;height:auto;display:block}
+.dag path{fill:none;stroke-width:2}
+.e-fork{stroke:#94a3b8}
+.e-merge{stroke:#0f766e;stroke-dasharray:5 4}
+.dag text{font-size:12px;fill:#1f2937}
+.dag a{text-decoration:none}
+.dag a:hover text.dg-tt{fill:var(--blue);font-weight:600}
+.dg-dropped{fill:#9ca3af;text-decoration:line-through}
+.dg-dc{fill:#6d28d9}.dg-dc-x{fill:#cbd5e1}
+.dg-bh{font-size:12px;font-weight:600;fill:#6b7280;letter-spacing:.05em}
+.dg-bh.meta{font-weight:400;font-size:11px}
+.dg-sep{stroke:#e5e7eb;stroke-width:1}
+.graph-b{overflow-x:auto;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 8px;margin-bottom:14px}
 /* ---- reasoning chain view ---- */
+.ch-task details>summary{display:flex;gap:10px;align-items:baseline;cursor:pointer;
+list-style:none;padding:2px 4px;border-radius:6px}
+.ch-task details>summary::-webkit-details-marker{display:none}
+.ch-task details>summary:hover{background:var(--hover)}
+.ch-task details>summary::before{content:"▸";font-size:9px;color:var(--muted);margin-right:2px}
+.ch-task details[open]>summary::before{content:"▾"}
+.ch-task details>summary .chip{margin-left:auto;flex:none}
+.ch-task details>summary a{font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ch-task details>ul{margin:0}
 .ch-q{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);
 border-left:4px solid #1f2937;border-radius:10px;padding:10px 14px;margin:2px 0 8px;font-weight:600}
 .ch-task{display:flex;gap:10px;align-items:baseline;margin:10px 0 2px;padding-top:8px;
@@ -263,6 +286,106 @@ font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
 .ev{font-size:13.5px;padding:6px 0;border-bottom:1px dashed var(--line)}
 footer{margin-top:30px;color:var(--muted);font-size:12px;text-align:center}
 """
+
+GRAPH_DOT = {"active": "#1d4ed8", "decided": "#6d28d9", "promoted": "#15803d", "dropped": "#9ca3af"}
+
+
+def _dag_edge(parts: list[str], x1: float, y1: float, x2: float, y2: float,
+              cls: str, extra: str, tip: str, src: str, dst: str) -> None:
+    d = (f"M{x1} {y1}L{x2} {y2}" if x1 == x2 else
+         f"M{x1} {y1}C{x1} {(y1 + y2) / 2},{x2} {(y1 + y2) / 2},{x2} {y2}")
+    parts.append(f'<path class="{cls}" data-f="{src}" data-t="{dst}" d="{d}"{extra}>'
+                 f"<title>{esc(tip)}</title></path>")
+
+
+def task_graph(tasks: dict, stages: list) -> str:
+    """Structure map (collapsed by default next to the chain): stage bands, one lane
+    row per task, parent = solid fork, link = dashed merge-back; node click anchors
+    to the task's divider in the chain below."""
+    secs = stage_sections(tasks, stages)
+    if not secs:
+        return ""
+    PAD, LANE_W, ROW, HDR = 16, 22, 28, 34
+    order: list[dict] = []
+    bands: list[tuple[str, int, int]] = []
+    for label, group in secs:
+        g = sorted(group, key=lambda x: x["ts1"])
+        bands.append((label, len(order), len(g)))
+        order.extend(g)
+    rows = {t["id"]: i for i, t in enumerate(order)}
+    lane_of: dict[str, int] = {}
+    last_row: list[int] = []
+    for t in order:
+        p = t.get("parent")
+        lane = None
+        if p in lane_of and last_row[lane_of[p]] < rows[t["id"]]:
+            lane = lane_of[p]
+        else:
+            lane = next((i for i, r in enumerate(last_row) if r < rows[t["id"]]), None)
+        if lane is None:
+            last_row.append(-1)
+            lane = len(last_row) - 1
+        lane_of[t["id"]] = lane
+        last_row[lane] = rows[t["id"]]
+    lx = PAD + len(last_row) * LANE_W + 6
+
+    ys: dict[str, int] = {}
+    head: list[str] = []
+    y = PAD
+    W = lx + 690
+    for label, start, n in bands:
+        if y > PAD:
+            head.append(f'<line class="dg-sep" x1="0" x2="{W}" y1="{y - 12}" y2="{y - 12}"/>')
+        head.append(f'<g class="dg-band" data-band="{esc(label)}">'
+                    f'<text class="dg-bh" x="2" y="{y + 14}">{esc(label)}</text>'
+                    f'<text class="dg-bh meta" x="{lx + 6}" y="{y + 14}">{n} 任务</text></g>')
+        y += HDR
+        for t in order[start:start + n]:
+            ys[t["id"]] = y
+            y += ROW
+    H = y + PAD
+
+    inb: dict[str, int] = {}
+    for t in order:
+        for e in t["events"]:
+            if e["type"] == "link" and e.get("to") in tasks:
+                inb[e["to"]] = inb.get(e["to"], 0) + 1
+
+    parts = [f'<svg class="dag" viewBox="0 0 {W} {H}" role="img">',
+             '<defs><marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" '
+             'markerHeight="7" orient="auto-start-reverse">'
+             '<path d="M0 0L8 4L0 8z" fill="#0f766e"/></marker></defs>', *head]
+    for t in order:
+        p = t.get("parent")
+        if p in rows and p != t["id"]:
+            _dag_edge(parts, PAD + lane_of[p] * LANE_W, ys[p], PAD + lane_of[t["id"]] * LANE_W,
+                      ys[t["id"]], "e-fork", "", f"{p} 分叉出 {t['id']}", p, t["id"])
+    for t in order:
+        for e in t["events"]:
+            if e["type"] == "link" and e.get("to") in rows and e["to"] != t["id"]:
+                _dag_edge(parts, PAD + lane_of[t["id"]] * LANE_W, ys[t["id"]],
+                          PAD + lane_of[e["to"]] * LANE_W, ys[e["to"]], "e-merge",
+                          ' marker-end="url(#arr)"',
+                          f"{t['id']} 衔接 {e['to']}：{e.get('why', '')}", t["id"], e["to"])
+    for t in order:
+        cx, cy = PAD + lane_of[t["id"]] * LANE_W, ys[t["id"]]
+        n = inb.get(t["id"], 0)
+        title = t["title"][:20] + ("…" if len(t["title"]) > 20 else "") + (f" ↩{n}" if n else "")
+        cur = current_decision(t)
+        if cur:
+            rat = cur.get("rationale", "")
+            rat = rat[:20] + ("…" if len(rat) > 20 else "")
+            dec, dc_cls = esc(f"{cur.get('chosen', '')}—{rat}"), "dg-dc"
+        else:
+            dec, dc_cls = "—", "dg-dc-x"
+        parts.append(f'<a href="#{esc(t["id"])}">'
+                     f'<circle cx="{cx}" cy="{cy}" r="4.5" fill="{GRAPH_DOT.get(t["status"], "#6b7280")}">'
+                     f'<title>{esc(t["id"])} · {esc(t["title"])}</title></circle>'
+                     f'<text x="{lx}" y="{cy + 4}" class="dg-tt dg-{t["status"]}">{esc(title)}</text>'
+                     f'<text x="{lx + 326}" y="{cy + 4}" class="{dc_cls}">{dec}</text></a>')
+    parts.append("</svg>")
+    return f'<div class="graph-b">{"".join(parts)}</div>'
+
 
 def bar_html() -> str:
     items = [("all", "全部"), ("open", "未结"), ("t-obs", "问题"), ("k-survey", "调研"),
@@ -587,7 +710,7 @@ def index_page(tasks: dict, stages: list, goal: str = "") -> str:
             if e["type"] == "link" and e.get("to") in tasks:
                 inb[e["to"]] = inb.get(e["to"], 0) + 1
 
-    body = [bar_html()]
+    body = [bar_html(), task_graph(tasks, stages)]
     for label, group in secs:
         q = qmap.get(label, "")
         root = (f'<div class="ch-q"><span class="tag t-task">阶段问题</span> {esc(q)}</div>'
@@ -595,12 +718,13 @@ def index_page(tasks: dict, stages: list, goal: str = "") -> str:
         rows = []
         for t in sorted(group, key=lambda x: x["ts1"]):
             n = inb.get(t["id"], 0)
-            rows.append(f'<li class="ch-task"><a href="{esc(t["id"])}.html">'
-                        f'{esc(t["id"])} · {esc(t["title"])}</a>'
+            evs = "".join(_node(e, tasks=tasks) for e in t["events"] if e["type"] != "task.new")
+            rows.append(f'<li class="ch-task" id="{esc(t["id"])}"><details>'
+                        f'<summary><a href="{esc(t["id"])}.html">{esc(t["id"])} · {esc(t["title"])}</a>'
                         + (f'<span class="ts-meta"> ↩{n}</span>' if n else "")
                         + f'<span class="chip c-{t["status"]}">'
-                          f'{STATUS_ZH.get(t["status"], t["status"])}</span></li>')
-            rows.extend(_node(e, tasks=tasks) for e in t["events"] if e["type"] != "task.new")
+                          f'{STATUS_ZH.get(t["status"], t["status"])}</span></summary>'
+                        f'<ul class="tree">{evs}</ul></details></li>')
         body.append(f'<section class="ch-sec"><h2>{esc(label)}</h2>{root}'
                     f'<ul class="tree">{"".join(rows)}</ul></section>')
     return _page("index", header, "".join(body) + SCRIPT)
